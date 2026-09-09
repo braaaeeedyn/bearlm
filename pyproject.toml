@@ -1,0 +1,25 @@
+[project]
+name = "bearlm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Braedyn Thompson", email = "braaaeeedyn@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "openai>=3.10.0",
+    "pdfplumber>=0.11.10",
+    "plotly>=7.0.0",
+    "pymongo[srv]>=4.18.0",
+    "pymupdf>=1.28.2",
+    "python-dotenv>=1.2.3",
+    "streamlit>=1.63.0",
+]
+
+[project.scripts]
+bearlm = "bearlm:main"
+
+[build-system]
+requires = ["uv_build>=0.12.11,<0.13.0"]
+build-backend = "uv_build"
