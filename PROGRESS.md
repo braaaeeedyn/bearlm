@@ -1,20 +1,26 @@
 # BearLM — Progress & Roadmap
 
-_Last updated: 2026-09-09 (Stage 4 code written & verified)_
+_Last updated: 2026-09-17 (Stage 5 RAG core complete & tested)_
 
 ## ⭐ START HERE NEXT SESSION
-Stage 4 code is **written and verified** (compiles clean; `db.ping()` returns
-`True` against live Atlas). Not yet run. Do these, in order:
+Stages 4 and 5 are **done and working**. The corpus is ingested (2,241 chunks in
+Atlas), the Vector Search index `vector_index` is **ACTIVE**, and `rag.py` returns
+cited answers (smoke test passes). **Next up: Stage 6 — the Streamlit UI.**
 
-1. **Run the ingestion pipeline** (spends OpenAI embedding credits, writes to Atlas):
-   ```
-   uv run python -m bearlm.doc_processor
-   ```
-   Expect per-course chunk counts then a total. cs188 is a 32 MB PDF — it's slow.
-2. **Create the Atlas Vector Search index** (manual, in the Atlas web UI):
-   collection `bearlm.chunks`, field `embedding`, **1536** dims, **cosine**.
-3. Then begin **Stage 5 — Retrieval + RAG** (new file `src/bearlm/rag.py`; ask
-   Claude to scaffold it the same guided way).
+1. **Build `app.py`** (new file, project root or `src/bearlm/`): a text box that
+   calls `rag.answer()` and shows the answer + citations. Log each query to a new
+   `bearlm.query_logs` collection (question, timestamp, courses cited) — this
+   feeds the Stage 7 dashboard. Ask Claude to scaffold it the same guided way.
+   - Checkpoint: `uv run streamlit run app.py` works locally.
+2. Then **Stage 7 — Analytics dashboard** (read `query_logs`, chart with plotly).
+
+**Uncommitted work in the tree:** the `.ipynb` ingestion fix in `doc_processor.py`
+and the completed `rag.py`. Commit when convenient (Stage 5 complete).
+
+**Quick re-test of what's built:**
+```
+uv run python -m bearlm.rag        # prints a cited answer to a sample question
+```
 
 ---
 
@@ -35,10 +41,10 @@ what's next, in order.**
 | 0 | Environment (uv, `.env`, Atlas cluster, deps) | ✅ Done |
 | 1 | Corpus collected in `data/raw/` | ✅ Done (CS189 still pending) |
 | 2 | Scaffolds written (`config`, `db`, `doc_processor`) | ✅ Done |
-| 3 | **Stage 4 — Ingestion pipeline** | ✅ Code done & verified — 🔜 **RUN IT** (see top) |
-| 4 | Stage 5 — Retrieval + RAG core | ⬜ Not started (no file yet) |
-| 5 | Atlas Vector Search index (manual, in UI) | ⬜ After ingestion runs |
-| 6 | Stage 6 — Basic UI (Streamlit) | ⬜ Not started |
+| 3 | **Stage 4 — Ingestion pipeline** | ✅ **Done & run** — 2,241 chunks in Atlas |
+| 4 | Atlas Vector Search index (`vector_index`) | ✅ **Done — ACTIVE** (1536 dims, cosine) |
+| 5 | **Stage 5 — Retrieval + RAG core** (`rag.py`) | ✅ **Done & tested** — returns cited answers |
+| 6 | Stage 6 — Basic UI (Streamlit) | 🔜 **NEXT** (no file yet) |
 | 7 | Stage 7 — Analytics dashboard | ⬜ Not started |
 | 8 | Stage 8 — Cloud deployment | ⬜ Not started |
 | 9 | Stage 9 — Polish + README | ⬜ Not started |
@@ -50,32 +56,25 @@ what's next, in order.**
 
 - [x] `uv` project, Python 3.13, `.venv/`, all deps declared + locked (`uv sync`).
 - [x] `.env` has real `OPENAI_API_KEY` + `MONGODB_URI` (gitignored).
-- [x] Atlas free-tier cluster `BearLM-cluster` live. DB/collections not yet created.
-- [x] Corpus in `data/raw/`: cs61a, cs61b, cs70, cs188 (PDFs); data8, data100 (markdown repos).
-- [x] `src/bearlm/config.py`, `db.py`, `doc_processor.py` — **implemented by hand
-      and verified** (all compile; `db.ping()` → `True` against live Atlas).
-- [ ] Ingestion **not yet run** — `bearlm.chunks` collection is still empty.
-- [ ] Atlas Vector Search index **not yet created**.
-- [ ] **Nothing committed to git yet** — make the first commit when convenient.
+- [x] Atlas free-tier cluster `BearLM-cluster` live; `bearlm.chunks` collection populated.
+- [x] Corpus in `data/raw/`: cs61a, cs61b, cs70, cs188 (PDFs); data8, data100 (Jupyter Book repos).
+- [x] `src/bearlm/config.py`, `db.py`, `doc_processor.py` — implemented & verified.
+- [x] **`.ipynb` support added** to `doc_processor.py` (`extract_notebook`) — the
+      Data 8 / Data 100 textbooks live in notebooks, not markdown; keeps markdown + code cells.
+- [x] **Ingestion run** — `uv run python -m bearlm.doc_processor` inserted **2,241 chunks**:
+      cs188 258 · cs61a 462 · cs61b 298 · cs70 429 · data100 422 · data8 372.
+- [x] **Atlas Vector Search index `vector_index`** created & **ACTIVE** on `embedding`,
+      1536 dims, cosine (JSON editor, "bring your own embeddings").
+- [x] **`src/bearlm/rag.py`** implemented & tested — `answer()` returns a grounded
+      answer + deduped citations; smoke test (`uv run python -m bearlm.rag`) passes.
+- [x] First commit exists (`c389fe0`, repo `braaaeeedyn/bearlm`).
+- [ ] **Uncommitted:** the `.ipynb` fix + `rag.py` — commit when convenient.
 
 ---
 
 ## What's next — in order
 
-### ▶ Stage 4 — Ingestion pipeline  (code DONE — just needs running)
-- [x] `config.py`, `db.py`, `doc_processor.py` implemented & verified.
-- [ ] **Run** `uv run python -m bearlm.doc_processor` → fills `bearlm.chunks`.
-- [ ] **Create Atlas Vector Search index** on `embedding`, 1536 dims, cosine
-      (manual, Atlas UI). Only after chunks exist.
-
-### Stage 5 — Retrieval + RAG core  _(new file: `src/bearlm/rag.py`)_
-- Embed the user's question (reuse `embed_batch`).
-- `$vectorSearch` aggregation against `bearlm.chunks` → top-k chunks.
-- Build a prompt: system instruction + retrieved chunks + question.
-- Call the chat model; return answer **plus citations** (course + section from metadata).
-- ✅ Checkpoint: a hard-coded question in `__main__` returns a cited answer in the terminal.
-
-### Stage 6 — Basic UI  _(new file: `app.py` or `src/bearlm/app.py`)_
+### ▶ Stage 6 — Basic UI  _(new file: `app.py` or `src/bearlm/app.py`)_ — NEXT
 - Streamlit: text box → call `rag.answer()` → show answer + citations.
 - Log each query to `bearlm.query_logs` (question, timestamp, which courses were cited).
 - ✅ Checkpoint: `uv run streamlit run app.py` works locally.

@@ -7,16 +7,19 @@ BearLM: a RAG-based Q&A assistant grounded in Berkeley course materials. Users a
 
 **Reference/inspiration only:** an open-source NotebookLM clone (Milvus + Zep + audio/podcast features) — NOT being used directly. Only borrowing architectural ideas (chunking pattern, RAG pipeline structure). This build uses MongoDB instead of Milvus, a fixed corpus instead of user uploads, and skips audio/podcast/memory-layer features entirely.
 
-## Current status: Stage 3 of 9 complete (see full plan below)
+## Current status: Stage 5 of 9 complete (see full plan below)
 - [x] Stage 0: Repo, venv (uv), MongoDB Atlas cluster, OpenAI key — all set up
 - [x] Stage 1–2: Corpus collected into `data/raw/` (CS61A, CS61B, CS70, CS188, Data 8, Data 100). CS189 still pending.
-- [ ] Stage 3: Future-course placeholders — not started
-- [ ] Stage 4: Ingestion pipeline — **NEXT STEP**
-- [ ] Stage 5: Retrieval + RAG core
-- [ ] Stage 6: Basic UI (Streamlit)
-- [ ] Stage 7: Visualization dashboard
+- [x] Stage 4: Ingestion pipeline — **done & run**. `doc_processor.py` (incl. `.ipynb`
+      support) inserted 2,241 chunks into `bearlm.chunks`. Vector Search index
+      `vector_index` is ACTIVE (embedding field, 1536 dims, cosine).
+- [x] Stage 5: Retrieval + RAG core — **done & tested**. `rag.py`'s `answer()`
+      returns a grounded answer + citations; smoke test passes.
+- [ ] Stage 6: Basic UI (Streamlit) — **NEXT STEP** (`app.py`; log queries to `query_logs`)
+- [ ] Stage 7: Visualization dashboard (read `query_logs`, plotly)
 - [ ] Stage 8: Cloud deployment
 - [ ] Stage 9: Polish + README
+- [ ] Backlog: CS189 corpus; future-course placeholders (CS61C, Data 88S, Data 101, Data 140)
 
 ## Environment
 - Python 3.13 via `uv` (venv at `.venv/`), Windows machine using Git Bash (MINGW64)
@@ -40,22 +43,30 @@ Note: CS70 was added opportunistically (had the file) — not in the original 6-
 
 Future/not-yet-implemented courses (per plan): CS61C, Data 88S, Data 101, Data 140.
 
-## Immediate next step (Stage 4: Ingestion Pipeline)
-Build `src/bearlm/doc_processor.py` that:
-1. Walks all 6 folders in `data/raw/`
-2. Extracts text per file type: PDF via `pdfplumber`/`pypdf`, Markdown read directly
-3. Chunks text (~500 tokens, ~50 token overlap), preserving metadata: `course`, `filename`, `section/page`
-4. Generates embeddings per chunk (OpenAI `text-embedding-3-small`)
-5. Inserts `{text, embedding, course, filename, section}` into MongoDB Atlas `bearlm.chunks` collection
-6. After ingestion, create a Vector Search index on the `embedding` field in Atlas UI
+## Immediate next step (Stage 6: Basic UI — Streamlit)
+Build `app.py` (project root or `src/bearlm/app.py`) that:
+1. Shows a text box for the user's question
+2. Calls `rag.answer(question)` → gets back `Answer(text, citations)`
+3. Displays the answer and its citations (course + section)
+4. Logs each query to a new `bearlm.query_logs` collection:
+   `{question, timestamp, courses: [...cited courses...]}` — this data feeds Stage 7
+5. Checkpoint: `uv run streamlit run app.py` runs it locally in the browser
+
+### Already built (Stages 4–5), for reference
+- `doc_processor.py`: extracts PDF (`pdfplumber`) + markdown + **notebooks** (`.ipynb`),
+  chunks (~500 tok / ~50 overlap, word-approximated), embeds (`text-embedding-3-small`),
+  inserts `{text, embedding, course, filename, section}`. Run once → 2,241 chunks.
+- Atlas Vector Search index `vector_index` on `embedding`, 1536 dims, cosine — ACTIVE.
+- `rag.py`: `retrieve()` ($vectorSearch, top-5) → `build_prompt()` → `answer()` returns
+  a cited answer. Uses `CHAT_MODEL = "gpt-4o-mini"`. Re-test: `uv run python -m bearlm.rag`.
 
 ## Full stage plan reference
 1. Core corpus (CS61A, CS61B, Data 8, CS188) — done (CS70 also added opportunistically)
 2. Data 100 corpus — done. CS189 corpus — NOT done (still needs sourcing; 26 separate note PDFs)
 3. Future courses placeholder (CS61C, Data 88S, Data 101, Data 140) — not started
-4. Ingestion pipeline — **next**
-5. Retrieval + RAG core
-6. Basic UI (Streamlit)
+4. Ingestion pipeline — **done & run** (2,241 chunks; `vector_index` ACTIVE)
+5. Retrieval + RAG core — **done & tested** (`rag.py`)
+6. Basic UI (Streamlit) — **next**
 7. Visualization dashboard
 8. Cloud deployment (Streamlit Community Cloud or Render)
 9. Polish + README

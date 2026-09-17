@@ -24,6 +24,7 @@ spots to replace. Do them roughly top-to-bottom.
 #   - `import pdfplumber`  OR  `import fitz`  (fitz = pymupdf; faster, either works)
 #   - `from openai import OpenAI`
 #   - `from . import config, db`
+import json
 from pathlib import Path
 from dataclasses import dataclass
 import pdfplumber
@@ -90,6 +91,35 @@ def extract_markdown(path):  # (Path) -> list[tuple[str, str]]
     """
     text = path.read_text(encoding="utf-8", errors = "ignore")
     return [(text, path.stem)] if text.strip() else []
+
+
+def extract_notebook(path):  # (Path) -> list[tuple[str, str]]
+    """Return a list of (text, section_label) for one Jupyter notebook (.ipynb).
+
+    Data 8 and Data 100 are Jupyter Book repos whose real chapters live in
+    notebooks, not markdown — so this is where most of that content comes from.
+
+    A notebook is JSON with a top-level "cells" list. Each cell has a
+    "cell_type" ("markdown" or "code") and a "source" (a list of line strings,
+    or occasionally a single string). We keep markdown cells (explanations) and
+    code cells (the pandas/numpy examples that are often the actual answer), and
+    skip cell outputs (long dataframes / repr noise). The whole notebook is
+    returned as one blob labeled by its filename; the chunker splits it later.
+    """
+    try:
+        nb = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except (json.JSONDecodeError, ValueError):
+        return []
+    parts = []
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") not in ("markdown", "code"):
+            continue
+        src = cell.get("source", "")
+        text = "".join(src) if isinstance(src, list) else src
+        if text.strip():
+            parts.append(text)
+    blob = "\n\n".join(parts)
+    return [(blob, path.stem)] if blob.strip() else []
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +226,8 @@ def build_chunks_for_course(course_dir):  # (Path) -> list[Chunk]
             pieces = extract_pdf(path)
         elif path.suffix.lower() in {".md", ".myst"}:
             pieces = extract_markdown(path)
+        elif path.suffix.lower() == ".ipynb":
+            pieces = extract_notebook(path)
         else:
             continue
         for raw_text, section in pieces:
