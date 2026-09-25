@@ -146,7 +146,10 @@ def build_prompt(question, chunks):  # (str, list[dict]) -> list[dict]
     context = "\n\n".join(f"[{c['course']} {c['section']}] {c['text']}" for c in chunks)
     system = ("You are BearLM, a study assistant for UC Berkeley CS/DS courses. "
               "Answer ONLY using the provided context. If the answer isn't in the "
-              "context, say you do not know. Cite sources as (course section)."
+              "context, say you do not know. Cite sources as (course section). "
+              "Write all mathematical notation in LaTeX: wrap inline math in "
+              "single dollar signs ($...$) and standalone equations in double "
+              "dollar signs ($$...$$)."
               )
     user = f"Context:\n{context}\n\nQuestion: {question}"
     return [ {"role": "system", "content": system}, {"role": "user", "content": user},]

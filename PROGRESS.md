@@ -1,36 +1,28 @@
 # BearLM — Progress & Roadmap
 
-_Last updated: 2026-09-17 (Stage 5 RAG core complete & tested)_
+_Last updated: 2026-09-25 (Stages 6–7 complete: FastAPI web app + analytics)_
 
 ## ⭐ START HERE NEXT SESSION
-Stages 4 and 5 are **done and working**. The corpus is ingested (2,241 chunks in
-Atlas), the Vector Search index `vector_index` is **ACTIVE**, and `rag.py` returns
-cited answers (smoke test passes). **Next up: Stage 6 — the Streamlit UI.**
+Stages 4–7 are **done and working**. The app is now a **FastAPI backend + a
+hand-built HTML/CSS/JS frontend** (the old Streamlit app has been removed). Ask a
+question, get a cited, LaTeX-rendered answer; an analytics page charts usage.
 
-1. **Build `app.py`** (new file, project root or `src/bearlm/`): a text box that
-   calls `rag.answer()` and shows the answer + citations. Log each query to a new
-   `bearlm.query_logs` collection (question, timestamp, courses cited) — this
-   feeds the Stage 7 dashboard. Ask Claude to scaffold it the same guided way.
-   - Checkpoint: `uv run streamlit run app.py` works locally.
-2. Then **Stage 7 — Analytics dashboard** (read `query_logs`, chart with plotly).
-
-**Uncommitted work in the tree:** the `.ipynb` ingestion fix in `doc_processor.py`
-and the completed `rag.py`. Commit when convenient (Stage 5 complete).
-
-**Quick re-test of what's built:**
+Run it locally:
 ```
-uv run python -m bearlm.rag        # prints a cited answer to a sample question
+uv run uvicorn bearlm.api:app --reload      # http://localhost:8000
 ```
+
+**Next up: Stage 8 — deployment.** FastAPI does NOT fit Streamlit Community Cloud;
+target Render / Railway / Fly.io (they run `uvicorn`). Add a Dockerfile or start
+command, set `OPENAI_API_KEY` + `MONGODB_URI` as platform secrets, and allowlist
+the host in Atlas Network Access.
 
 ---
 
-
-A RAG-based Q&A assistant grounded in Berkeley course materials. Ask a question,
-get a cited answer (course + section). Stack: MongoDB Atlas Vector Search +
-OpenAI embeddings, Streamlit UI, analytics dashboard, cloud deploy.
-
-See `PROJECT_HANDOFF.md` for full background. This file tracks **what's done and
-what's next, in order.**
+BearLM is a RAG-based Q&A assistant grounded in Berkeley course materials. Ask a
+question, get a cited answer (course + section). Stack: **FastAPI** + MongoDB Atlas
+Vector Search + OpenAI (embeddings + chat), a custom light/dark web UI, and a
+usage-analytics page. See `PROJECT_HANDOFF.md` for full background.
 
 ---
 
@@ -41,62 +33,77 @@ what's next, in order.**
 | 0 | Environment (uv, `.env`, Atlas cluster, deps) | ✅ Done |
 | 1 | Corpus collected in `data/raw/` | ✅ Done (CS189 still pending) |
 | 2 | Scaffolds written (`config`, `db`, `doc_processor`) | ✅ Done |
-| 3 | **Stage 4 — Ingestion pipeline** | ✅ **Done & run** — 2,241 chunks in Atlas |
-| 4 | Atlas Vector Search index (`vector_index`) | ✅ **Done — ACTIVE** (1536 dims, cosine) |
-| 5 | **Stage 5 — Retrieval + RAG core** (`rag.py`) | ✅ **Done & tested** — returns cited answers |
-| 6 | Stage 6 — Basic UI (Streamlit) | 🔜 **NEXT** (no file yet) |
-| 7 | Stage 7 — Analytics dashboard | ⬜ Not started |
-| 8 | Stage 8 — Cloud deployment | ⬜ Not started |
+| 3 | **Stage 4 — Ingestion pipeline** | ✅ Done & run — 2,241 chunks in Atlas |
+| 4 | Atlas Vector Search index (`vector_index`) | ✅ Done — ACTIVE (1536 dims, cosine) |
+| 5 | **Stage 5 — Retrieval + RAG core** (`rag.py`) | ✅ Done & tested — cited answers |
+| 6 | **Stage 6 — Web UI** (FastAPI + custom frontend) | ✅ **Done** — light/dark, LaTeX, cited answers |
+| 7 | **Stage 7 — Analytics** (`/analytics`) | ✅ **Done** — tiles + SVG charts from `query_logs` |
+| 8 | Stage 8 — Cloud deployment | 🔜 **NEXT** |
 | 9 | Stage 9 — Polish + README | ⬜ Not started |
-| — | Frontend visual design / styling | ⬜ **Last** — deprioritized |
 
 ---
 
-## What's done
+## Architecture (current)
 
-- [x] `uv` project, Python 3.13, `.venv/`, all deps declared + locked (`uv sync`).
-- [x] `.env` has real `OPENAI_API_KEY` + `MONGODB_URI` (gitignored).
-- [x] Atlas free-tier cluster `BearLM-cluster` live; `bearlm.chunks` collection populated.
-- [x] Corpus in `data/raw/`: cs61a, cs61b, cs70, cs188 (PDFs); data8, data100 (Jupyter Book repos).
-- [x] `src/bearlm/config.py`, `db.py`, `doc_processor.py` — implemented & verified.
-- [x] **`.ipynb` support added** to `doc_processor.py` (`extract_notebook`) — the
-      Data 8 / Data 100 textbooks live in notebooks, not markdown; keeps markdown + code cells.
-- [x] **Ingestion run** — `uv run python -m bearlm.doc_processor` inserted **2,241 chunks**:
-      cs188 258 · cs61a 462 · cs61b 298 · cs70 429 · data100 422 · data8 372.
-- [x] **Atlas Vector Search index `vector_index`** created & **ACTIVE** on `embedding`,
-      1536 dims, cosine (JSON editor, "bring your own embeddings").
-- [x] **`src/bearlm/rag.py`** implemented & tested — `answer()` returns a grounded
-      answer + deduped citations; smoke test (`uv run python -m bearlm.rag`) passes.
-- [x] First commit exists (`c389fe0`, repo `braaaeeedyn/bearlm`).
-- [ ] **Uncommitted:** the `.ipynb` fix + `rag.py` — commit when convenient.
+**Backend — `src/bearlm/`**
+- `config.py` — secrets (`.env`) + constants (models, chunk sizes, DB/collection names).
+- `db.py` — Atlas client; `get_chunks_collection()`, `get_query_logs_collection()`, `ping()`.
+- `doc_processor.py` — ingestion: extract PDF (`pdfplumber`) / markdown / `.ipynb`,
+  chunk (~500 tok / ~50 overlap, word-approx), embed (`text-embedding-3-small`),
+  insert into `bearlm.chunks`. Run: `uv run python -m bearlm.doc_processor`.
+- `rag.py` — `retrieve()` ($vectorSearch, top-5) → `build_prompt()` → `answer()`
+  returns `Answer(text, citations)`. `CHAT_MODEL = "gpt-4o-mini"`. The system prompt
+  asks the model to wrap math in `$…$` / `$$…$$`.
+- `api.py` — **FastAPI app** (`bearlm.api:app`). Serves the frontend and:
+  - `POST /api/ask` → `{answer, citations}`, logs each question to `bearlm.query_logs`.
+  - `GET /api/stats` → aggregated analytics (total, uncited, by-course, per-day, recent unanswered).
+  - `GET /api/courses` → distinct corpus courses (feeds the dynamic footer).
+  - `GET /` → `index.html`; `GET /analytics` → `analytics.html`.
+
+**Frontend — `web/`** (no framework, no build step)
+- `index.html` / `app.js` — Ask page: hero, pill search, suggestion chips, answer card,
+  citation tags. Renders markdown (`marked`) + math (`KaTeX`), sanitized (`DOMPurify`).
+  A post-processing step wraps the model's bare `( … )` / `[ … ]` LaTeX in `$…$`.
+- `analytics.html` / `analytics.js` — stat tiles + hand-built **SVG** charts (course
+  bars, per-day columns) + unanswered-questions list. No charting dependency.
+- `styles.css` — the Cohere-inspired design system: light + dark via `[data-theme]`
+  (☀/☾ toggle, persisted to `localStorage`), 22px cards, Space Grotesk / Inter /
+  Space Mono, cool-gray borders, blue (`#1863dc`) only on interaction.
+- `vendor/` — `marked`, `DOMPurify`, and full `KaTeX` (css/js/fonts) vendored
+  **locally** — zero external runtime dependencies (deploy-safe). Only Google Fonts
+  loads from the network.
+
+**Data (MongoDB Atlas `bearlm`)**
+- `chunks` — 2,241 embedded chunks; Vector Search index `vector_index` (1536, cosine), ACTIVE.
+- `query_logs` — `{question, timestamp (UTC), courses: [...]}`, written per question.
 
 ---
 
 ## What's next — in order
 
-### ▶ Stage 6 — Basic UI  _(new file: `app.py` or `src/bearlm/app.py`)_ — NEXT
-- Streamlit: text box → call `rag.answer()` → show answer + citations.
-- Log each query to `bearlm.query_logs` (question, timestamp, which courses were cited).
-- ✅ Checkpoint: `uv run streamlit run app.py` works locally.
-
-### Stage 7 — Analytics dashboard  _(Streamlit page / `plotly`)_
-- Read `query_logs`; charts: queries over time, most-cited courses, etc.
-
-### Stage 8 — Cloud deployment
-- Streamlit Community Cloud or Render. Set `OPENAI_API_KEY` + `MONGODB_URI` as
-  platform secrets (don't commit `.env`). Whitelist the host IP in Atlas.
+### ▶ Stage 8 — Cloud deployment — NEXT
+- Add a `Dockerfile` or platform start command running `uvicorn bearlm.api:app --host 0.0.0.0 --port $PORT`.
+- Deploy on Render / Railway / Fly.io.
+- Set `OPENAI_API_KEY` + `MONGODB_URI` as platform secrets (never commit `.env`).
+- Atlas Network Access: allowlist the host (`0.0.0.0/0` if the platform has no fixed egress IP).
+- ✅ Checkpoint: public URL answers a question end-to-end and shows analytics.
 
 ### Stage 9 — Polish + README
-- Fill in the empty `README.md`: what it is, setup, `uv sync`, run commands, screenshots.
-
-### LAST — Frontend visual design (deprioritized)
-- Styling, theming, layout polish on the Streamlit app. Functionality first;
-  make it look good only once everything works.
+- Fill the empty `README.md`: what it is, stack, `uv sync`, run commands, screenshots, live URL.
 
 ---
 
+## Adding more textbooks later
+1. Drop file(s) into `data/raw/<course>/` (folder name → the `course` citation label).
+2. Re-run `uv run python -m bearlm.doc_processor`.
+3. The Atlas index auto-indexes new docs; the frontend course list updates via `/api/courses`.
+
+Notes: only **PDF / `.md` / `.ipynb`** are extracted (other formats need a new
+extractor); `ingest()` currently wipes + re-embeds the whole corpus each run (cheap
+now, could be made incremental); Atlas M0 free tier is 512 MB (lots of headroom).
+
 ## Backlog / optional
 - Source CS189 corpus (26 note PDFs) and re-run ingestion.
-- Future-course placeholders: CS61C, Data 88S, Data 101, Data 140.
-- Upgrade markdown extraction to split on headings for sharper citations.
-- Swap word-count chunking for real `tiktoken` token counting.
+- Incremental ingestion (embed only new/changed files).
+- `plotly` dependency is now unused (charts are hand-built SVG) — can be removed.
+- Split markdown on headings for sharper citations; real `tiktoken` token counting.

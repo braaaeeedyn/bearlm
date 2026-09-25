@@ -48,3 +48,18 @@ def ping() -> bool:
     """
     get_client().admin.command("ping")
     return True
+
+
+def get_query_logs_collection():  # -> Collection
+    """Return the `bearlm.query_logs` collection (Stage 6 writes here, Stage 7 reads).
+
+    Mirror get_chunks_collection(), but use config.QUERY_LOGS_COLL instead of
+    CHUNKS_COLL. Mongo creates the collection lazily on the first insert, so
+    there's nothing to set up ahead of time.
+
+    Recipe:
+      1. client = get_client()
+      2. return client[config.DB_NAME][config.QUERY_LOGS_COLL]
+    """
+    client = get_client()
+    return client[config.DB_NAME][config.QUERY_LOGS_COLL]

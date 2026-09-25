@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BearLM — Analytics</title>
+  <meta name="description" content="Usage analytics for BearLM: questions over time, most-cited courses, and coverage gaps." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐻</text></svg>" />
+
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('bearlm-theme');
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', saved || (prefersDark ? 'dark' : 'light'));
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="topbar-left">
+        <a class="wordmark" href="/">BearLM</a>
+        <nav class="nav">
+          <a href="/" class="nav-link">Ask</a>
+          <a href="/analytics" class="nav-link is-active">Analytics</a>
+        </nav>
+      </div>
+      <button class="toggle" id="themeToggle" type="button" aria-label="Toggle light and dark mode">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.2"></circle>
+          <path d="M12 2.5v2M12 19.5v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2.5 12h2M19.5 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"></path>
+        </svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.5A8 8 0 1 1 9.5 4a6.4 6.4 0 0 0 10.5 10.5z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="wrap analytics">
+    <section class="page-head">
+      <p class="kicker">Usage · Grounded Q&amp;A</p>
+      <h1 class="page-title">Analytics</h1>
+      <p class="subhead">How BearLM is being used — question volume, which courses get cited, and where the corpus falls short.</p>
+    </section>
+
+    <section id="tiles" class="tiles"></section>
+
+    <section class="panel">
+      <div class="card-label">Most-cited courses</div>
+      <div id="courseChart" class="chart"></div>
+    </section>
+
+    <section class="panel">
+      <div class="card-label">Questions over time</div>
+      <div id="dayChart" class="chart"></div>
+    </section>
+
+    <section class="panel">
+      <div class="card-label">Recent unanswered questions</div>
+      <div id="unanswered" class="unanswered"></div>
+    </section>
+  </main>
+
+  <footer class="footer wrap">
+    <span class="mono">Corpus</span> <span id="corpusList">cs61a · cs61b · cs70 · cs188 · data8 · data100</span>
+  </footer>
+
+  <script src="/static/analytics.js" defer></script>
+</body>
+</html>
