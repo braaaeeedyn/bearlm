@@ -289,13 +289,35 @@ def _dedupe_citations(docs):
 # GROUNDED ANSWERS with a confidence gate (projects + uploads, anti-hallucination)
 # ---------------------------------------------------------------------------
 
-def _confident_docs(question, collection_name):
-    """Vector-retrieve a pool from one collection, rerank, and keep only chunks
-    whose cross-encoder relevance clears config.RERANK_MIN_SCORE.
+import re
 
-    The reranker score is the confidence gate: metric-independent and calibrated,
-    so a weak/irrelevant collection yields an empty list (→ refuse or fall back)
-    instead of forcing a plausible-sounding but ungrounded answer.
+# Meta/summary questions ("what is in this pdf", "summarize this") are topically
+# orthogonal to any single passage, so the cross-encoder scores them ~0 and the
+# confidence gate would wrongly refuse. Detect them and answer from the doc's top
+# chunks directly (the strict prompt still prevents hallucination).
+_META_RE = re.compile(
+    r"\b(summari[sz]e|summary|overview|tl;?dr|abstract|the gist|"
+    r"what(?:'?s| is| are)?\s+(?:in|inside|contained in)\b|"
+    r"what(?:'?s| is)\s+this\b|"
+    r"what(?:'?s| is| does)\s+(?:this|the)\s+(?:document|pdf|file|paper|doc)\b|"
+    r"main\s+(?:points|ideas|takeaways|topics|themes)|"
+    r"key\s+(?:points|takeaways|ideas|topics|themes)|"
+    r"tell me about\s+(?:this|the)|give (?:me )?(?:a|an)\s+(?:summary|overview))",
+    re.IGNORECASE,
+)
+
+
+def _is_meta_question(question: str) -> bool:
+    return bool(_META_RE.search(question or ""))
+
+
+def _top_docs(question, collection_name, gated=True):
+    """Vector-retrieve a pool from one collection and rerank it.
+
+    gated=True keeps only chunks clearing config.RERANK_MIN_SCORE (the confidence
+    gate → empty list means "not covered", so callers refuse or fall back).
+    gated=False skips the threshold and just returns the reranked top chunks (for
+    meta/summary questions, where topical scores are uninformative).
     """
     from . import local_store, rerank
 
@@ -304,8 +326,9 @@ def _confident_docs(question, collection_name):
     if not candidates:
         return []
     scored = rerank.rerank_scored(question, candidates)
-    strong = [d for d, s in scored if s >= config.RERANK_MIN_SCORE]
-    return strong[: config.RERANK_TOP_N]
+    if gated:
+        scored = [(d, s) for d, s in scored if s >= config.RERANK_MIN_SCORE]
+    return [d for d, _ in scored[: config.RERANK_TOP_N]]
 
 
 def answer_grounded(question, primary_collection=None, primary_label="project",
@@ -323,13 +346,26 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     if allow_fallback is None:
         allow_fallback = config.PROJECT_FALLBACK_TO_CORPUS
 
+    from . import local_store
+
     docs, used = [], "none"
+    meta = _is_meta_question(question)
+
     if primary_collection:
-        docs = _confident_docs(question, primary_collection)
-        if docs:
-            used = primary_label
-    if not docs and (allow_fallback or not primary_collection):
-        docs = _confident_docs(question, config.CHROMA_COLLECTION)
+        if meta and local_store.collection_count(primary_collection) > 0:
+            # "Summarize / what's in this doc" — answer from the doc's top chunks
+            # without the confidence gate (which would wrongly refuse these).
+            docs = _top_docs(question, primary_collection, gated=False)
+            used = primary_label if docs else "none"
+        else:
+            docs = _top_docs(question, primary_collection, gated=True)
+            if docs:
+                used = primary_label
+
+    # Fall back to the course corpus for uncovered questions — but NOT for a meta
+    # question about "this" doc (that should stay scoped to the primary doc).
+    if not docs and (allow_fallback or not primary_collection) and not (meta and primary_collection):
+        docs = _top_docs(question, config.CHROMA_COLLECTION, gated=True)
         if docs:
             used = "corpus"
 

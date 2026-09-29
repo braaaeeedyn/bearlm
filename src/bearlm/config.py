@@ -98,11 +98,14 @@ RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "15"))  # retrieved before rerank
 RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "4"))            # kept after rerank
 # bge-reranker relevance in [0,1] below which a chunk is "not about this
-# question". The confidence gate for grounded project/upload answers: metric-
-# independent, so it works regardless of Chroma's distance function. Measured
-# separation on this corpus: off-topic pairs score ~0.000, real matches ~0.30+,
-# so 0.1 gives a robust margin and errs toward refusal. Tune against eval/.
-RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0.1"))
+# question" — the confidence gate for grounded project/upload answers (metric-
+# independent, so it works regardless of Chroma's distance function). Measured:
+# off-topic pairs score ~0.000, while genuine content matches on a single
+# uploaded doc score ~0.04-0.05 (and much higher on the big corpus). 0.02 keeps
+# real matches while filtering pure noise. Summary/meta questions ("what is in
+# this pdf") score ~0.0 regardless and are handled by a separate meta bypass in
+# rag.answer_grounded rather than by this threshold. Tune against eval/.
+RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0.02"))
 
 # Token-based chunking (shared by the RecursiveCharacterTextSplitter length fn).
 # tiktoken's cl100k_base is a reasonable, model-agnostic token proxy.
