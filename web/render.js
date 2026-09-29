@@ -130,5 +130,31 @@
     }
   }
 
-  window.BearLM = { renderMarkdown: renderMarkdown, renderMath: renderMath, renderResult: renderResult };
+  // Build a citation tag element (link if it's a page-anchored PDF, else plain).
+  function citationTag(c, source, ctx) {
+    const text = (c.course || "") + " · " + (c.section || "");
+    const url = citationLink(c, source, ctx);
+    if (url) {
+      const a = document.createElement("a");
+      a.className = "tag tag-link";
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.title = "Open " + (c.source || "") + " at " + (c.section || "");
+      a.textContent = text;
+      return a;
+    }
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = text;
+    return tag;
+  }
+
+  window.BearLM = {
+    renderMarkdown: renderMarkdown,
+    renderMath: renderMath,
+    renderResult: renderResult,
+    citationTag: citationTag,
+    sourceBadge: SOURCE_BADGE,
+  };
 })();

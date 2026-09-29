@@ -154,20 +154,77 @@ async def add_project_pdf(slug: str, file: UploadFile = File(...)) -> dict:
     return projects.add_pdf_to_project(slug, data, file.filename)
 
 
-@app.post("/api/projects/{slug}/ask", response_model=AskResponse)
-def ask_project(slug: str, req: AskRequest) -> AskResponse:
+# --- chats within a project (multi-turn) ------------------------------------
+
+class CreateChatRequest(BaseModel):
+    title: str | None = None
+
+
+@app.post("/api/projects/{slug}/chats")
+def create_chat(slug: str, req: CreateChatRequest | None = None) -> dict:
     _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
         raise HTTPException(status_code=404, detail="No such project.")
+    return projects.create_chat(slug, req.title if req else None)
+
+
+@app.get("/api/projects/{slug}/chats/{chat_id}")
+def get_chat(slug: str, chat_id: str) -> dict:
+    _require_local()
+    from . import projects
+
+    chat = projects.get_chat(slug, chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="No such chat.")
+    return chat
+
+
+@app.delete("/api/projects/{slug}/chats/{chat_id}")
+def delete_chat(slug: str, chat_id: str) -> dict:
+    _require_local()
+    from . import projects
+
+    projects.delete_chat(slug, chat_id)
+    return {"deleted": chat_id}
+
+
+@app.post("/api/projects/{slug}/reset")
+def reset_project_context(slug: str) -> dict:
+    """Clear all of a project's chats (conversation context) but keep its PDFs."""
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    projects.clear_chats(slug)
+    return {"reset": slug}
+
+
+@app.post("/api/projects/{slug}/chats/{chat_id}/ask", response_model=AskResponse)
+def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
+    _require_local()
+    from . import projects
+
+    chat = projects.get_chat(slug, chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="No such chat.")
     question = req.question.strip()
     if not question:
         return AskResponse(answer="Please enter a question.", citations=[], source="none")
+
+    history = chat.get("messages", [])
     result = rag.answer_grounded(
-        question, primary_collection=projects.project_collection(slug), primary_label="project"
+        question,
+        primary_collection=projects.project_collection(slug),
+        primary_label="project",
+        history=history,
     )
-    projects.append_history(slug, question, result.text, result.citations, result.source)
+    # Persist both turns so the conversation survives reloads.
+    projects.append_message(slug, chat_id, "user", question)
+    projects.append_message(slug, chat_id, "assistant", result.text,
+                            citations=result.citations, source=result.source)
     return AskResponse(
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],

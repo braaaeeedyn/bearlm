@@ -78,9 +78,10 @@ def list_projects() -> list[dict]:
     if not config.PROJECTS_DIR.exists():
         return []
     out = []
-    for d in sorted(config.PROJECTS_DIR.iterdir()):
+    for d in config.PROJECTS_DIR.iterdir():
         if d.is_dir() and (d / "project.json").exists():
             out.append(public(json.loads((d / "project.json").read_text(encoding="utf-8"))))
+    out.sort(key=lambda p: p.get("created") or "", reverse=True)  # newest first
     return out
 
 
@@ -116,32 +117,110 @@ def add_pdf_to_project(slug: str, data: bytes, filename: str) -> dict:
     return entry
 
 
-def append_history(slug: str, question: str, answer_text: str, citations: list[dict],
-                   answered_from: str) -> None:
-    """Persist a Q&A turn so project 'progress' survives restarts."""
+# --- chats (multi-turn conversations within a project) -----------------------
+
+def _chats(meta: dict) -> list[dict]:
+    return meta.setdefault("chats", [])
+
+
+def _find_chat(meta: dict, chat_id: str) -> dict | None:
+    for c in meta.get("chats", []):
+        if c["id"] == chat_id:
+            return c
+    return None
+
+
+def _chat_summary(c: dict) -> dict:
+    """Lightweight chat info for the sidebar list (no full messages)."""
+    return {
+        "id": c["id"],
+        "title": c.get("title") or "New chat",
+        "created": c.get("created"),
+        "updated": c.get("updated", c.get("created")),
+        "message_count": len(c.get("messages", [])),
+    }
+
+
+def create_chat(slug: str, title: str | None = None) -> dict:
+    meta = get_project(slug)
+    if meta is None:
+        raise ValueError(f"No such project: {slug}")
+    chat = {
+        "id": uuid.uuid4().hex[:12],
+        "title": title or "New chat",
+        "created": _now(),
+        "updated": _now(),
+        "messages": [],
+    }
+    _chats(meta).insert(0, chat)  # newest first
+    _save(meta)
+    return chat
+
+
+def list_chats(slug: str) -> list[dict]:
+    meta = get_project(slug) or {}
+    chats = sorted(meta.get("chats", []), key=lambda c: c.get("updated") or "", reverse=True)
+    return [_chat_summary(c) for c in chats]
+
+
+def get_chat(slug: str, chat_id: str) -> dict | None:
+    meta = get_project(slug)
+    return _find_chat(meta, chat_id) if meta else None
+
+
+def delete_chat(slug: str, chat_id: str) -> None:
     meta = get_project(slug)
     if meta is None:
         return
-    meta.setdefault("history", []).append({
-        "question": question,
-        "answer": answer_text,
-        "citations": citations,
-        "source": answered_from,
-        "at": _now(),
-    })
+    meta["chats"] = [c for c in meta.get("chats", []) if c["id"] != chat_id]
     _save(meta)
 
 
+def clear_chats(slug: str) -> None:
+    """Reset a project's conversation context: delete all chats, keep the PDFs.
+
+    Long conversation histories can drift and induce hallucination; clearing them
+    lets the user start fresh while retaining the grounded reference documents.
+    """
+    meta = get_project(slug)
+    if meta is None:
+        return
+    meta["chats"] = []
+    _save(meta)
+
+
+def append_message(slug: str, chat_id: str, role: str, content: str,
+                   citations: list[dict] | None = None, source: str | None = None) -> dict | None:
+    """Append one message to a chat; title the chat from its first user message."""
+    meta = get_project(slug)
+    if meta is None:
+        return None
+    chat = _find_chat(meta, chat_id)
+    if chat is None:
+        return None
+    msg = {"role": role, "content": content, "at": _now()}
+    if citations is not None:
+        msg["citations"] = citations
+    if source:
+        msg["source"] = source
+    chat.setdefault("messages", []).append(msg)
+    chat["updated"] = _now()
+    if role == "user" and (not chat.get("title") or chat["title"] == "New chat"):
+        chat["title"] = content.strip()[:48] or "New chat"
+    _save(meta)
+    return msg
+
+
 def public(meta: dict) -> dict:
-    """Metadata safe to return over the API (drops nothing sensitive here, but
-    normalizes shape and adds live chunk count)."""
+    """Metadata safe to return over the API (adds live chunk count + chat summaries)."""
     slug = meta["slug"]
+    chats = sorted(meta.get("chats", []), key=lambda c: c.get("updated") or "", reverse=True)
     return {
         "name": meta.get("name", slug),
         "slug": slug,
         "created": meta.get("created"),
         "pdfs": meta.get("pdfs", []),
-        "history": meta.get("history", []),
+        "chats": [_chat_summary(c) for c in chats],
         "chunks": local_store.collection_count(project_collection(slug)),
     }
 

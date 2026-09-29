@@ -331,23 +331,37 @@ def _top_docs(question, collection_name, gated=True):
     return [d for d, _ in scored[: config.RERANK_TOP_N]]
 
 
+def _retrieval_query(question, history):
+    """Retrieval query for a (possibly follow-up) turn: prepend the previous user
+    turn so short follow-ups like "explain more" still retrieve the right chunks."""
+    prev = None
+    for h in reversed(history or []):
+        if h.get("role") == "user":
+            prev = h.get("content")
+            break
+    return f"{prev} {question}".strip() if prev else question
+
+
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None):
-    """Grounded answer with a confidence gate and project-first fallback.
+                    allow_fallback=None, history=None):
+    """Grounded answer with a confidence gate, project-first fallback, and
+    optional multi-turn conversation history.
 
     - Try the primary collection (a project or an upload). If confident chunks
       exist, answer from them (source = primary_label).
     - Else, if fallback is allowed, try the main course corpus.
     - Else refuse with config.GROUNDED_REFUSAL rather than guess.
+    `history` is a list of prior {role, content} turns for conversational memory.
     """
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_core.output_parsers import StrOutputParser
-    from langchain_core.prompts import ChatPromptTemplate
 
     if allow_fallback is None:
         allow_fallback = config.PROJECT_FALLBACK_TO_CORPUS
 
     from . import local_store
 
+    rq = _retrieval_query(question, history)
     docs, used = [], "none"
     meta = _is_meta_question(question)
 
@@ -355,17 +369,17 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
         if meta and local_store.collection_count(primary_collection) > 0:
             # "Summarize / what's in this doc" — answer from the doc's top chunks
             # without the confidence gate (which would wrongly refuse these).
-            docs = _top_docs(question, primary_collection, gated=False)
+            docs = _top_docs(rq, primary_collection, gated=False)
             used = primary_label if docs else "none"
         else:
-            docs = _top_docs(question, primary_collection, gated=True)
+            docs = _top_docs(rq, primary_collection, gated=True)
             if docs:
                 used = primary_label
 
     # Fall back to the course corpus for uncovered questions — but NOT for a meta
     # question about "this" doc (that should stay scoped to the primary doc).
     if not docs and (allow_fallback or not primary_collection) and not (meta and primary_collection):
-        docs = _top_docs(question, config.CHROMA_COLLECTION, gated=True)
+        docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True)
         if docs:
             used = "corpus"
 
@@ -373,18 +387,20 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
         return Answer(config.GROUNDED_REFUSAL, [], source="none")
 
     system = (
-        "You are BearLM, a grounded study assistant. Answer the question using "
-        "ONLY the provided context. If the answer is not fully contained in the "
-        f"context, reply with exactly: \"{config.GROUNDED_REFUSAL}\" "
-        "Cite sources inline as (course section). Write math in LaTeX: inline "
-        "in $...$ and display in $$...$$."
+        "You are BearLM, a grounded study assistant having a conversation. Answer "
+        "the latest question using ONLY the provided context (plus the conversation "
+        "so far for reference). If the answer is not contained in the context, reply "
+        f"with exactly: \"{config.GROUNDED_REFUSAL}\" Cite sources inline as "
+        "(course section). Write math in LaTeX: inline in $...$ and display in $$...$$."
     )
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", system), ("human", "Context:\n{context}\n\nQuestion: {question}")]
-    )
-    text = (prompt | _get_llm() | StrOutputParser()).invoke(
-        {"context": _format_docs(docs), "question": question}
-    )
+    msgs = [SystemMessage(content=system)]
+    for h in (history or [])[-6:]:  # last few turns for context
+        content = h.get("content", "")
+        msgs.append(HumanMessage(content=content) if h.get("role") == "user"
+                    else AIMessage(content=content))
+    msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
+
+    text = (_get_llm() | StrOutputParser()).invoke(msgs)
     return Answer(text, _dedupe_citations(docs), source=used)
 
 

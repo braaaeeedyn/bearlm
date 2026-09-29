@@ -1,35 +1,34 @@
-// BearLM Projects page: manage projects, add PDFs, project-scoped grounded chat,
-// and a one-off "chat with a PDF" upload mode. Rendering is shared via render.js.
+// BearLM Projects: collapsible sidebar, project list (newest→oldest), per-project
+// reference PDFs + multiple chats, multi-turn grounded conversation, reset context,
+// and a stale-project (>1 week) delete prompt on open.
 (function () {
   "use strict";
 
   const root = document.documentElement;
   const $ = function (id) { return document.getElementById(id); };
+  const STALE_DAYS = 7;
 
-  // --- theme -----------------------------------------------------------------
+  // --- theme + sidebar collapse ----------------------------------------------
   $("themeToggle").addEventListener("click", function () {
     const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("bearlm-theme", next); } catch (e) {}
   });
+  function setSidebar(collapsed) {
+    root.setAttribute("data-sidebar", collapsed ? "collapsed" : "expanded");
+    try { localStorage.setItem("bearlm-sidebar", collapsed ? "collapsed" : "expanded"); } catch (e) {}
+  }
+  $("sidebarToggle").addEventListener("click", function () { setSidebar(true); });
+  $("sidebarOpen").addEventListener("click", function () { setSidebar(false); });
 
-  // --- shared state ----------------------------------------------------------
+  // --- state -----------------------------------------------------------------
   let currentSlug = null;
-  let currentUploadId = null;
+  let currentChatId = null;
   let busy = false;
 
-  // --- small UI helpers ------------------------------------------------------
-  function loadingCard(el, label) {
-    el.innerHTML =
-      '<div class="card reveal"><div class="card-label">' + label + '</div>' +
-      '<div class="skeleton"><span></span><span></span><span></span></div></div>';
-  }
-  function errorCard(el, message) {
-    el.innerHTML =
-      '<div class="card error reveal"><div class="card-label">Something went wrong</div>' +
-      '<div class="answer-body"><p></p></div></div>';
-    el.querySelector(".answer-body p").textContent = message;
-  }
+  // --- helpers ---------------------------------------------------------------
+  function show(el) { el.classList.remove("hidden"); }
+  function hide(el) { el.classList.add("hidden"); }
   async function jsonFetch(url, opts) {
     const resp = await fetch(url, opts);
     if (!resp.ok) {
@@ -37,57 +36,48 @@
       try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) {}
       throw new Error(detail);
     }
-    return resp.json();
+    return resp.status === 204 ? null : resp.json();
   }
-  function show(el) { el.classList.remove("hidden"); }
-  function hide(el) { el.classList.add("hidden"); }
-
-  // --- view switching --------------------------------------------------------
-  function showEmpty() {
-    currentSlug = null;
-    show($("projEmpty")); hide($("projView")); hide($("uploadView"));
-    markActive();
+  function daysOld(iso) {
+    if (!iso) return 0;
+    return (Date.now() - new Date(iso).getTime()) / 86400000;
   }
-  function showProjectView() {
-    hide($("projEmpty")); show($("projView")); hide($("uploadView"));
-  }
-  function showUploadView() {
-    currentSlug = null;
-    hide($("projEmpty")); hide($("projView")); show($("uploadView"));
-    markActive();
+  function relTime(iso) {
+    const d = daysOld(iso);
+    if (d < 1 / 24) return "just now";
+    if (d < 1) return Math.floor(d * 24) + "h ago";
+    if (d < 7) return Math.floor(d) + "d ago";
+    return new Date(iso).toLocaleDateString();
   }
 
-  // --- sidebar / project list ------------------------------------------------
-  function markActive() {
-    document.querySelectorAll(".proj-item").forEach(function (n) {
-      n.classList.toggle("is-active", n.dataset.slug === currentSlug);
-    });
-  }
-
-  async function loadProjects() {
+  // --- projects list ---------------------------------------------------------
+  async function loadProjects(selectAfter) {
     const list = $("projectList");
     try {
       const data = await jsonFetch("/api/projects");
       list.innerHTML = "";
       if (!data.projects.length) {
-        list.innerHTML = '<p class="proj-list-empty">No projects yet.</p>';
-        return;
+        list.innerHTML = '<p class="side-empty">No projects yet.</p>';
+      } else {
+        data.projects.forEach(function (p) {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "side-item";
+          item.dataset.slug = p.slug;
+          item.innerHTML =
+            '<span class="side-item-name"></span>' +
+            '<span class="side-item-meta">' + p.pdfs.length + ' PDF' + (p.pdfs.length === 1 ? '' : 's') +
+            ' · ' + (p.chats ? p.chats.length : 0) + ' chat' + ((p.chats && p.chats.length === 1) ? '' : 's') + '</span>';
+          item.querySelector(".side-item-name").textContent = p.name;
+          item.addEventListener("click", function () { selectProject(p.slug); });
+          list.appendChild(item);
+        });
       }
-      data.projects.forEach(function (p) {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = "proj-item";
-        item.dataset.slug = p.slug;
-        item.innerHTML =
-          '<span class="proj-item-name"></span>' +
-          '<span class="proj-item-meta">' + (p.pdfs.length) + ' PDF' + (p.pdfs.length === 1 ? '' : 's') + '</span>';
-        item.querySelector(".proj-item-name").textContent = p.name;
-        item.addEventListener("click", function () { selectProject(p.slug); });
-        list.appendChild(item);
-      });
-      markActive();
+      if (selectAfter) selectProject(selectAfter);
+      return data.projects;
     } catch (e) {
-      list.innerHTML = '<p class="proj-list-empty">Couldn\'t load projects. (' + e.message + ')</p>';
+      list.innerHTML = '<p class="side-empty">Couldn\'t load. (' + e.message + ')</p>';
+      return [];
     }
   }
 
@@ -98,57 +88,68 @@
     busy = true;
     try {
       const p = await jsonFetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name }),
       });
       input.value = "";
-      await loadProjects();
-      selectProject(p.slug);
-    } catch (e) {
-      alert(e.message);
-    } finally {
-      busy = false;
-    }
+      await loadProjects(p.slug);
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
   }
 
-  // --- project detail --------------------------------------------------------
+  // --- project detail (sidebar) ----------------------------------------------
+  function showProjectsList() {
+    currentSlug = null; currentChatId = null;
+    hide($("sideProject")); show($("projectsSection"));
+    hide($("chatView")); show($("chatEmpty"));
+    document.querySelectorAll(".side-item").forEach(function (n) { n.classList.remove("is-active"); });
+  }
+
   async function selectProject(slug) {
-    currentSlug = slug;
-    currentUploadId = null;
-    showProjectView();
-    markActive();
-    $("projResult").innerHTML = "";
-    $("projQ").value = "";
+    currentSlug = slug; currentChatId = null;
+    hide($("projectsSection")); show($("sideProject"));
+    hide($("chatView")); show($("chatEmpty"));
     await refreshProject();
   }
 
   async function refreshProject() {
     if (!currentSlug) return;
-    try {
-      const p = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug));
-      $("projName").textContent = p.name;
-      renderDocList(p.pdfs);
-    } catch (e) {
-      errorCard($("projResult"), e.message);
-    }
+    const p = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug));
+    $("sideProjectName").textContent = p.name;
+    renderDocList(p.pdfs);
+    renderChatList(p.chats || []);
   }
 
   function renderDocList(pdfs) {
     const wrap = $("projDocList");
     wrap.innerHTML = "";
-    if (!pdfs.length) {
-      wrap.innerHTML = '<p class="proj-doc-empty">No PDFs yet — add one to ground this project.</p>';
-      return;
-    }
+    if (!pdfs.length) { wrap.innerHTML = '<p class="side-empty">No PDFs yet.</p>'; return; }
     pdfs.forEach(function (d) {
       const row = document.createElement("div");
-      row.className = "proj-doc";
-      row.innerHTML =
-        '<span class="proj-doc-name"></span>' +
-        '<span class="proj-doc-meta">' + d.chunks + ' chunks</span>';
-      row.querySelector(".proj-doc-name").textContent = d.filename;
+      row.className = "side-doc";
+      row.innerHTML = '<span class="side-doc-name"></span><span class="side-doc-meta">' + d.chunks + '</span>';
+      row.querySelector(".side-doc-name").textContent = d.filename;
       wrap.appendChild(row);
+    });
+  }
+
+  function renderChatList(chats) {
+    const wrap = $("chatList");
+    wrap.innerHTML = "";
+    if (!chats.length) { wrap.innerHTML = '<p class="side-empty">No chats yet — start one.</p>'; return; }
+    chats.forEach(function (c) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "side-chat" + (c.id === currentChatId ? " is-active" : "");
+      item.innerHTML = '<span class="side-chat-title"></span>' +
+        '<span class="side-chat-meta">' + relTime(c.updated) + '</span>' +
+        '<span class="side-chat-x" title="Delete chat">✕</span>';
+      item.querySelector(".side-chat-title").textContent = c.title;
+      item.addEventListener("click", function (e) {
+        if (e.target.classList.contains("side-chat-x")) { deleteChat(c.id); return; }
+        openChat(c.id);
+      });
+      wrap.appendChild(item);
     });
   }
 
@@ -158,126 +159,185 @@
     busy = true;
     const wrap = $("projDocList");
     const note = document.createElement("p");
-    note.className = "proj-doc-empty";
-    note.textContent = "Embedding " + file.name + "… this can take a moment.";
+    note.className = "side-empty"; note.textContent = "Embedding " + file.name + "…";
     wrap.prepend(note);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/pdfs", {
-        method: "POST", body: form,
-      });
+      const form = new FormData(); form.append("file", file);
+      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/pdfs", { method: "POST", body: form });
       await refreshProject();
       await loadProjects();
-    } catch (e) {
-      errorCard($("projResult"), e.message);
-    } finally {
-      fileInput.value = "";
-      busy = false;
-    }
+    } catch (e) { alert(e.message); }
+    finally { fileInput.value = ""; busy = false; }
   }
 
   async function deleteProject() {
     if (!currentSlug || busy) return;
-    if (!confirm("Delete this project and all its PDFs? This can't be undone.")) return;
+    if (!confirm("Delete this project, its PDFs and all chats? This can't be undone.")) return;
     busy = true;
     try {
       await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug), { method: "DELETE" });
-      showEmpty();
+      showProjectsList();
       await loadProjects();
-    } catch (e) {
-      alert(e.message);
-    } finally {
-      busy = false;
-    }
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
   }
 
-  async function askProject(question) {
-    if (!currentSlug || busy || !question.trim()) return;
+  async function resetContext() {
+    if (!currentSlug || busy) return;
+    if (!confirm("Reset context: delete all chats in this project (keeping your PDFs)?\n\nThis clears conversation history to reduce drift/hallucination.")) return;
     busy = true;
-    loadingCard($("projResult"), "Searching your project");
     try {
-      const data = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question }),
+      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/reset", { method: "POST" });
+      currentChatId = null;
+      hide($("chatView")); show($("chatEmpty"));
+      await refreshProject();
+      await loadProjects();
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
+  }
+
+  // --- chats -----------------------------------------------------------------
+  async function newChat() {
+    if (!currentSlug || busy) return;
+    busy = true;
+    try {
+      const c = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/chats", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
       });
-      window.BearLM.renderResult($("projResult"), data, { slug: currentSlug, showBadge: true });
-    } catch (e) {
-      errorCard($("projResult"), e.message);
-    } finally {
-      busy = false;
-    }
+      await refreshProject();
+      openChat(c.id);
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
   }
 
-  // --- quick upload mode -----------------------------------------------------
-  async function doUpload(file) {
-    if (!file || busy) return;
+  async function deleteChat(chatId) {
+    if (!currentSlug || busy) return;
+    if (!confirm("Delete this chat?")) return;
     busy = true;
-    loadingCard($("uploadResult"), "Reading " + file.name);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const data = await jsonFetch("/api/uploads", { method: "POST", body: form });
-      currentUploadId = data.upload_id;
-      const badge = $("uploadName");
-      badge.textContent = data.filename + " · " + data.chunks + " chunks";
-      badge.hidden = false;
-      $("uploadResult").innerHTML = "";
-      show($("uploadAskForm"));
-      $("uploadQ").focus();
-    } catch (e) {
-      errorCard($("uploadResult"), e.message);
-    } finally {
-      busy = false;
-    }
+      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/chats/" + chatId, { method: "DELETE" });
+      if (chatId === currentChatId) { currentChatId = null; hide($("chatView")); show($("chatEmpty")); }
+      await refreshProject();
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
   }
 
-  async function askUpload(question) {
-    if (!currentUploadId || busy || !question.trim()) return;
-    busy = true;
-    loadingCard($("uploadResult"), "Reading your PDF");
+  async function openChat(chatId) {
+    currentChatId = chatId;
+    hide($("chatEmpty")); show($("chatView"));
+    document.querySelectorAll(".side-chat").forEach(function (n) { n.classList.remove("is-active"); });
+    const p = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug));
+    renderChatList(p.chats || []);
     try {
-      const data = await jsonFetch("/api/uploads/" + encodeURIComponent(currentUploadId) + "/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question }),
+      const chat = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/chats/" + chatId);
+      renderConversation(chat.messages || []);
+    } catch (e) { renderConversation([]); }
+    $("chatQ").focus();
+  }
+
+  // --- conversation rendering ------------------------------------------------
+  function ctx() { return { slug: currentSlug }; }
+
+  function appendMessage(msg) {
+    const scroll = $("chatScroll");
+    const wrap = document.createElement("div");
+    wrap.className = "msg msg-" + (msg.role === "user" ? "user" : "assistant");
+
+    if (msg.role === "user") {
+      wrap.textContent = msg.content;
+    } else {
+      const body = document.createElement("div");
+      body.className = "answer-body";
+      body.innerHTML = window.BearLM.renderMarkdown(msg.content || "");
+      window.BearLM.renderMath(body);
+      // source badge
+      const badge = window.BearLM.sourceBadge[msg.source || "corpus"];
+      if (badge) {
+        const b = document.createElement("span");
+        b.className = "src-badge " + badge.cls;
+        b.textContent = badge.text;
+        wrap.appendChild(b);
+      }
+      wrap.appendChild(body);
+      // citations
+      if (msg.citations && msg.citations.length) {
+        const tags = document.createElement("div");
+        tags.className = "tags msg-cites";
+        msg.citations.forEach(function (c) { tags.appendChild(window.BearLM.citationTag(c, msg.source, ctx())); });
+        wrap.appendChild(tags);
+      }
+    }
+    scroll.appendChild(wrap);
+    scroll.scrollTop = scroll.scrollHeight;
+    return wrap;
+  }
+
+  function renderConversation(messages) {
+    const scroll = $("chatScroll");
+    scroll.innerHTML = "";
+    if (!messages.length) {
+      scroll.innerHTML = '<p class="chat-hint">New chat — ask anything about this project’s PDFs. The whole conversation is kept as context.</p>';
+      return;
+    }
+    messages.forEach(appendMessage);
+  }
+
+  async function sendMessage(question) {
+    if (busy || !question.trim()) return;
+    // ensure a chat exists
+    if (!currentChatId) { await newChat(); if (!currentChatId) return; }
+    busy = true;
+    const input = $("chatQ");
+    input.value = "";
+    // clear the "new chat" hint if present
+    const hint = $("chatScroll").querySelector(".chat-hint");
+    if (hint) hint.remove();
+    appendMessage({ role: "user", content: question });
+    const thinking = appendMessage({ role: "assistant", content: "_…thinking…_", source: null });
+    thinking.classList.add("msg-thinking");
+    try {
+      const data = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/chats/" + currentChatId + "/ask", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: question }),
       });
-      window.BearLM.renderResult($("uploadResult"), data, { uid: currentUploadId, showBadge: true });
+      thinking.remove();
+      appendMessage({ role: "assistant", content: data.answer, citations: data.citations, source: data.source });
+      refreshProject();  // update chat title/updated in sidebar
     } catch (e) {
-      errorCard($("uploadResult"), e.message);
-    } finally {
-      busy = false;
+      thinking.remove();
+      appendMessage({ role: "assistant", content: "⚠️ " + e.message, source: "none" });
+    } finally { busy = false; }
+  }
+
+  // --- stale-project prompt on open ------------------------------------------
+  async function promptStaleProjects(projects) {
+    let dismissed = {};
+    try { dismissed = JSON.parse(sessionStorage.getItem("bearlm-stale-dismissed") || "{}"); } catch (e) {}
+    for (const p of projects) {
+      if (daysOld(p.created) < STALE_DAYS || dismissed[p.slug]) continue;
+      const ok = confirm('Project "' + p.name + '" is over a week old.\n\nDelete it now? (Keeping it will not remove your PDFs.)');
+      if (ok) {
+        try { await jsonFetch("/api/projects/" + encodeURIComponent(p.slug), { method: "DELETE" }); } catch (e) {}
+      } else {
+        dismissed[p.slug] = true;
+        try { sessionStorage.setItem("bearlm-stale-dismissed", JSON.stringify(dismissed)); } catch (e) {}
+      }
     }
   }
 
   // --- wiring ----------------------------------------------------------------
   $("newProjectBtn").addEventListener("click", createProject);
   $("newProjectName").addEventListener("keydown", function (e) { if (e.key === "Enter") createProject(); });
-
+  $("backToProjects").addEventListener("click", showProjectsList);
   $("addPdfBtn").addEventListener("click", function () { $("projPdfInput").click(); });
   $("projPdfInput").addEventListener("change", function () { addProjectPdf(this); });
   $("deleteProjectBtn").addEventListener("click", deleteProject);
-  $("projAskForm").addEventListener("submit", function (e) { e.preventDefault(); askProject($("projQ").value); });
-
-  $("quickPdfBtn").addEventListener("click", showUploadView);
-  $("uploadPickBtn").addEventListener("click", function () { $("uploadInput").click(); });
-  $("uploadInput").addEventListener("change", function () { if (this.files[0]) doUpload(this.files[0]); });
-  $("uploadAskForm").addEventListener("submit", function (e) { e.preventDefault(); askUpload($("uploadQ").value); });
-
-  // drag & drop for the quick-upload dropzone
-  const drop = $("uploadDrop");
-  ["dragover", "dragenter"].forEach(function (ev) {
-    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("is-drag"); });
-  });
-  ["dragleave", "drop"].forEach(function (ev) {
-    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("is-drag"); });
-  });
-  drop.addEventListener("drop", function (e) {
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) doUpload(f);
-  });
+  $("resetCtxBtn").addEventListener("click", resetContext);
+  $("newChatBtn").addEventListener("click", newChat);
+  $("chatForm").addEventListener("submit", function (e) { e.preventDefault(); sendMessage($("chatQ").value); });
 
   // --- init ------------------------------------------------------------------
-  loadProjects();
+  (async function () {
+    const projects = await loadProjects();
+    promptStaleProjects(projects);
+  })();
 })();
