@@ -4,3 +4,10 @@ __pycache__/
 .venv/
 data/raw/
 data/processed/
+
+# Local vector store (Chroma) — generated, large binary
+db/
+# User-created projects, ad-hoc uploads, eval outputs — generated/user data
+data/projects/
+data/uploads/
+eval/out/

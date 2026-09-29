@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BearLM — Projects</title>
+  <meta name="description" content="Create a project, add your own PDFs, and get grounded answers from them first — with anti-hallucination guardrails." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐻</text></svg>" />
+
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('bearlm-theme');
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', saved || (prefersDark ? 'dark' : 'light'));
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <div class="topbar-left">
+        <a class="wordmark" href="/">BearLM</a>
+        <nav class="nav">
+          <a href="/" class="nav-link">Ask</a>
+          <a href="/projects" class="nav-link is-active">Projects</a>
+          <a href="/analytics" class="nav-link">Analytics</a>
+        </nav>
+      </div>
+      <button class="toggle" id="themeToggle" type="button" aria-label="Toggle light and dark mode">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.2"></circle>
+          <path d="M12 2.5v2M12 19.5v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2.5 12h2M19.5 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"></path>
+        </svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 14.5A8 8 0 1 1 9.5 4a6.4 6.4 0 0 0 10.5 10.5z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="wrap proj-layout">
+    <!-- Sidebar: project list + quick-PDF chat -->
+    <aside class="proj-sidebar">
+      <div class="proj-new">
+        <input id="newProjectName" type="text" placeholder="New project name…" aria-label="New project name" />
+        <button id="newProjectBtn" class="btn-solid" type="button">Create</button>
+      </div>
+      <div class="proj-list" id="projectList" aria-label="Your projects"></div>
+      <div class="proj-sidebar-sep"></div>
+      <button id="quickPdfBtn" class="proj-quick" type="button">
+        <span class="proj-quick-icon">＋</span> Chat with a PDF
+        <span class="proj-quick-sub">one-off, not saved</span>
+      </button>
+    </aside>
+
+    <!-- Main panel -->
+    <section class="proj-main" id="projMain">
+      <div class="proj-empty" id="projEmpty">
+        <h1 class="title proj-title">Projects</h1>
+        <p class="subhead">Create a project and add your own PDFs. BearLM answers from your project's documents <strong>first</strong>, falling back to the course corpus only when your docs don't cover it — and refuses rather than guessing when nothing does.</p>
+        <p class="subhead proj-empty-hint">Select a project on the left, or “Chat with a PDF” for a quick one-off.</p>
+      </div>
+
+      <!-- Project view -->
+      <div class="proj-view hidden" id="projView">
+        <div class="proj-head">
+          <h1 class="proj-name" id="projName">Project</h1>
+          <button id="deleteProjectBtn" class="btn-ghost" type="button">Delete project</button>
+        </div>
+
+        <div class="proj-docs">
+          <div class="proj-docs-head">
+            <span class="card-label">Reference PDFs</span>
+            <button id="addPdfBtn" class="btn-outline" type="button">+ Add PDF</button>
+            <input id="projPdfInput" type="file" accept="application/pdf,.pdf" hidden />
+          </div>
+          <div class="proj-doclist" id="projDocList"></div>
+        </div>
+
+        <form class="ask proj-ask" id="projAskForm" autocomplete="off">
+          <div class="ask-field">
+            <input id="projQ" type="text" placeholder="Ask this project…" aria-label="Ask this project" />
+            <button class="submit" type="submit" aria-label="Ask">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+            </button>
+          </div>
+        </form>
+        <section class="result" id="projResult" aria-live="polite"></section>
+      </div>
+
+      <!-- Quick-PDF view -->
+      <div class="proj-view hidden" id="uploadView">
+        <div class="proj-head">
+          <h1 class="proj-name">Chat with a PDF</h1>
+          <span class="src-badge badge-upload" id="uploadName" hidden></span>
+        </div>
+        <div class="upload-drop" id="uploadDrop">
+          <p>Drop a PDF here or <button id="uploadPickBtn" class="linklike" type="button">choose a file</button>.</p>
+          <p class="upload-hint">It’s embedded locally and answered <strong>only</strong> from its own contents. Not saved.</p>
+          <input id="uploadInput" type="file" accept="application/pdf,.pdf" hidden />
+        </div>
+        <form class="ask proj-ask hidden" id="uploadAskForm" autocomplete="off">
+          <div class="ask-field">
+            <input id="uploadQ" type="text" placeholder="Ask about this PDF…" aria-label="Ask about this PDF" />
+            <button class="submit" type="submit" aria-label="Ask">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+            </button>
+          </div>
+        </form>
+        <section class="result" id="uploadResult" aria-live="polite"></section>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/vendor/marked.min.js" defer></script>
+  <script src="/static/vendor/purify.min.js" defer></script>
+  <script src="/static/vendor/katex/katex.min.js" defer></script>
+  <script src="/static/vendor/katex/auto-render.min.js" defer></script>
+  <script src="/static/render.js" defer></script>
+  <script src="/static/projects-app.js" defer></script>
+</body>
+</html>

@@ -17,71 +17,8 @@
     try { localStorage.setItem("bearlm-theme", next); } catch (e) {}
   });
 
-  // --- Rendering helpers -----------------------------------------------------
-  // The model sometimes writes math in bare parens — ( \alpha ), ( \nabla f(w) ),
-  // ( w ) — which KaTeX can't detect. Wrap those in $...$ so it can, without
-  // touching prose like (course section p.159) or (weights), or existing math.
-  function mathifyParens(text) {
-    const spans = [];
-    // 1. Stash existing math spans so we never edit inside them.
-    let t = text.replace(
-      /\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)/g,
-      function (m) {
-        spans.push(m);
-        return "\u0000" + (spans.length - 1) + "\u0000";
-      }
-    );
-    // 2. Square-bracket display math with a command → $$...$$
-    //    (the negative lookahead avoids markdown links like [text](url)).
-    t = t.replace(
-      /\[\s*([^\[\]]*\\[a-zA-Z]+[^\[\]]*?)\s*\](?!\()/g,
-      function (_, inner) {
-        return "$$" + inner.trim() + "$$";
-      }
-    );
-    // 3. Parens containing a LaTeX command → inline math (allows one nested
-    //    paren level, e.g. ( \nabla f(w) )).
-    t = t.replace(
-      /\(\s*((?:[^()]|\([^()]*\))*\\[a-zA-Z]+(?:[^()]|\([^()]*\))*)\s*\)/g,
-      function (_, inner) {
-        return "$" + inner.trim() + "$";
-      }
-    );
-    // 4. A lone single variable in spaced parens: ( w ), ( x_i ) — but not
-    //    f(w) (letter before "(") and not list markers like (a).
-    t = t.replace(
-      /(^|[^A-Za-z0-9\\])\(\s+([A-Za-z](?:_[A-Za-z0-9]+)?)\s+\)/g,
-      function (_, pre, v) {
-        return pre + "$" + v + "$";
-      }
-    );
-    // 5. Restore the stashed math spans.
-    return t.replace(/\u0000(\d+)\u0000/g, function (_, i) {
-      return spans[+i];
-    });
-  }
-
-  function renderMarkdown(text) {
-    const prepared = mathifyParens(text || "");
-    const raw = window.marked ? window.marked.parse(prepared) : prepared;
-    return window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
-  }
-
-  function renderMath(el) {
-    if (!window.renderMathInElement) return;
-    try {
-      window.renderMathInElement(el, {
-        delimiters: [
-          { left: "$$", right: "$$", display: true },
-          { left: "$", right: "$", display: false },
-          { left: "\\[", right: "\\]", display: true },
-          { left: "\\(", right: "\\)", display: false },
-        ],
-        throwOnError: false,
-      });
-    } catch (e) {}
-  }
-
+  // --- Rendering -------------------------------------------------------------
+  // Markdown/math/citation rendering lives in render.js (shared with Projects).
   function showLoading() {
     result.innerHTML =
       '<div class="card reveal">' +
@@ -100,39 +37,8 @@
   }
 
   function showAnswer(data) {
-    const card = document.createElement("div");
-    card.className = "card reveal";
-    const label = document.createElement("div");
-    label.className = "card-label";
-    label.textContent = "Answer";
-    const bodyEl = document.createElement("div");
-    bodyEl.className = "answer-body";
-    bodyEl.innerHTML = renderMarkdown(data.answer || "");
-    renderMath(bodyEl);
-    card.appendChild(label);
-    card.appendChild(bodyEl);
-
-    result.innerHTML = "";
-    result.appendChild(card);
-
-    if (data.citations && data.citations.length) {
-      const sources = document.createElement("div");
-      sources.className = "sources reveal";
-      const slabel = document.createElement("div");
-      slabel.className = "card-label";
-      slabel.textContent = "Sources";
-      const tags = document.createElement("div");
-      tags.className = "tags";
-      data.citations.forEach(function (c) {
-        const tag = document.createElement("span");
-        tag.className = "tag";
-        tag.textContent = (c.course || "") + " · " + (c.section || "");
-        tags.appendChild(tag);
-      });
-      sources.appendChild(slabel);
-      sources.appendChild(tags);
-      result.appendChild(sources);
-    }
+    // The Ask page always queries the course corpus, so no source badge here.
+    window.BearLM.renderResult(result, data, { showBadge: false });
   }
 
   // --- Ask flow --------------------------------------------------------------

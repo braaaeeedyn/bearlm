@@ -22,13 +22,26 @@ from dotenv import load_dotenv
 #   Hint: `load_dotenv()` with no args walks up from the cwd looking for `.env`.
 load_dotenv()
 
+# --- Backend selection -------------------------------------------------------
+# BACKEND picks the whole stack: "openai" = OpenAI embeddings/chat + MongoDB
+# Atlas Vector Search (the original); "local" = Ollama embeddings/chat + Chroma
+# (the local migration). Everything downstream branches on this so the two can
+# be compared side by side without deleting either path.
+BACKEND = os.environ.get("BACKEND", "openai").strip().lower()
+if BACKEND not in ("openai", "local"):
+    raise ValueError(f"BACKEND must be 'openai' or 'local', got {BACKEND!r}")
+
 # --- Secrets (read from .env — never hard-code the real values here) ---------
-# TODO(you): OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-# TODO(you): MONGODB_URI    = os.environ["MONGODB_URI"]
-#   Using os.environ[...] (not .get) means the program fails loudly if a key is
-#   missing, which is what you want for required secrets.
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-MONGODB_URI = os.environ["MONGODB_URI"]
+# OpenAI/Atlas secrets are only required when BACKEND == "openai", so read them
+# lazily (.get, not [...]) — a pure-local install shouldn't need them at all.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+MONGODB_URI = os.environ.get("MONGODB_URI")
+if BACKEND == "openai":
+    missing = [k for k in ("OPENAI_API_KEY", "MONGODB_URI") if not os.environ.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"BACKEND=openai requires {', '.join(missing)} in the environment (.env)."
+        )
 
 
 # --- Paths -------------------------------------------------------------------
@@ -60,3 +73,58 @@ CHUNK_OVERLAP_TOKENS = 50
 DB_NAME = "bearlm"
 CHUNKS_COLL = "chunks"
 QUERY_LOGS_COLL = "query_logs"
+
+
+# =============================================================================
+# LOCAL BACKEND (Ollama + Chroma) — used when BACKEND == "local"
+# =============================================================================
+# Ollama server + models. `qwen2.5:3b` is the fallback chat model for machines
+# under ~8 GB VRAM; override with OLLAMA_CHAT_MODEL in .env if you pulled a
+# different one. `nomic-embed-text` produces 768-dim embeddings.
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "llama3.1:8b")
+OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+LOCAL_EMBEDDING_DIM = 768  # nomic-embed-text output width; verified after re-embed
+
+# Chroma persistent store (created on first ingest under the project root).
+CHROMA_DIR = os.environ.get("CHROMA_DIR", str(Path(__file__).resolve().parents[2] / "db"))
+CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "bearlm_chunks")
+
+# Retrieval knobs shared by the local chain.
+RETRIEVAL_K = int(os.environ.get("RETRIEVAL_K", "4"))          # chunks fed to the LLM
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
+RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "15"))  # retrieved before rerank
+RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "4"))            # kept after rerank
+# bge-reranker relevance in [0,1] below which a chunk is "not about this
+# question". The confidence gate for grounded project/upload answers: metric-
+# independent, so it works regardless of Chroma's distance function. Measured
+# separation on this corpus: off-topic pairs score ~0.000, real matches ~0.30+,
+# so 0.1 gives a robust margin and errs toward refusal. Tune against eval/.
+RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0.1"))
+
+# Token-based chunking (shared by the RecursiveCharacterTextSplitter length fn).
+# tiktoken's cl100k_base is a reasonable, model-agnostic token proxy.
+TOKENIZER_ENCODING = os.environ.get("TOKENIZER_ENCODING", "cl100k_base")
+
+# --- Projects & ad-hoc uploads ----------------------------------------------
+# Each project is a folder of PDFs plus its own Chroma collection. Uploads are
+# ephemeral single-PDF collections scoped to one session.
+PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", str(Path(__file__).resolve().parents[2] / "data" / "projects")))
+UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", str(Path(__file__).resolve().parents[2] / "data" / "uploads")))
+PROJECT_COLLECTION_PREFIX = "project_"
+UPLOAD_COLLECTION_PREFIX = "upload_"
+
+# Project-first retrieval: consult project PDFs, and fall back to the main course
+# corpus only when the project doesn't strongly cover the question.
+PROJECT_FALLBACK_TO_CORPUS = os.environ.get("PROJECT_FALLBACK_TO_CORPUS", "true").strip().lower() in ("1", "true", "yes")
+
+# --- Anti-hallucination: retrieval confidence threshold ----------------------
+# Chroma relevance scores are normalized to [0, 1] (higher = more relevant). A
+# retrieved chunk below MIN_RELEVANCE is treated as "not really about this
+# question" and dropped; if nothing clears the bar the answer is refused rather
+# than guessed. This value is embedding-model-specific and worth tuning against
+# eval/ — start conservative and adjust.
+MIN_RELEVANCE = float(os.environ.get("MIN_RELEVANCE", "0.30"))
+GROUNDED_REFUSAL = "I don't know based on the provided materials."

@@ -1,0 +1,31 @@
+# ============================================================================
+# BearLM evaluation set.  One JSON object per line.  Lines starting with '#'
+# and blank lines are ignored by the loaders.
+#
+# Schema per line:
+#   {
+#     "question":       str,          # the user question
+#     "gold_course":    str,          # course the answer should come from
+#     "gold_section":   str,          # section/page label of the gold chunk(s)
+#     "gold_chunk_ids": [str, ...]    # OPTIONAL local Chroma ids ("course:idx");
+#   }                                 # leave [] to score recall by (course,section)
+#
+# >>> ACTION REQUIRED (you, not the model) <<<
+# The 10 rows below are DRAFTS auto-generated from real corpus chunks as a
+# template. You MUST review/verify each one AND write the remaining ~40-90
+# yourself so the eval set is 50-100 questions total. In particular:
+#   - Confirm gold_course / gold_section actually contain the answer.
+#   - After you run `local_store.ingest_local`, fill gold_chunk_ids by looking
+#     up the true source chunk id(s) if you want id-level recall.
+# Do NOT trust these drafts as verified gold until you have checked them.
+# ============================================================================
+{"question": "What is the difference between an expression and a statement in Python?", "gold_course": "cs61a", "gold_section": "p.9", "gold_chunk_ids": []}
+{"question": "In the recursive sum_digits function, what happens when the number is not less than 10, and how is a value like 738 split across recursive calls?", "gold_course": "cs61a", "gold_section": "p.107", "gold_chunk_ids": []}
+{"question": "How does the find operation work in a quick-union disjoint sets (union-find) implementation?", "gold_course": "cs61b", "gold_section": "p.38", "gold_chunk_ids": []}
+{"question": "What is a state space, and how do we mathematically express a search problem for a planning agent?", "gold_course": "cs188", "gold_section": "p.4", "gold_chunk_ids": []}
+{"question": "Describe a randomized algorithm for testing whether a positive integer N is prime, and why it has low error probability.", "gold_course": "cs70", "gold_section": "p.36", "gold_chunk_ids": []}
+{"question": "How can you build an empirical histogram of the slope of a regression line using bootstrap resampling?", "gold_course": "data8", "gold_section": "Inference_for_the_True_Slope", "gold_chunk_ids": []}
+{"question": "Why is controlling model complexity harder than just adjusting polynomial degree, and how does cross-validation help select it?", "gold_course": "data100", "gold_section": "cv_reg", "gold_chunk_ids": []}
+{"question": "What is object-oriented programming and how does it relate to data abstraction in CS61A?", "gold_course": "cs61a", "gold_section": "p.3", "gold_chunk_ids": []}
+{"question": "What are comparables and comparators used for in Java?", "gold_course": "cs61b", "gold_section": "p.2", "gold_chunk_ids": []}
+{"question": "What is universal hashing and why is it useful?", "gold_course": "cs70", "gold_section": "p.3", "gold_chunk_ids": []}

@@ -162,7 +162,18 @@ def chunk_text(text):  # (str) -> list[str]
 # 3. EMBEDDING  — text  ->  vector[1536]  (OpenAI)
 # ---------------------------------------------------------------------------
 
-_client = OpenAI()
+_client = None
+
+
+def _get_client():
+    """Construct the OpenAI client once, lazily (so local-only installs that lack
+    OPENAI_API_KEY can still import this module for its extraction helpers)."""
+    global _client
+    if _client is None:
+        _client = OpenAI()
+    return _client
+
+
 def embed_batch(texts):  # (list[str]) -> list[list[float]]
     """Embed a batch of chunk texts in one API call.
 
@@ -177,7 +188,7 @@ def embed_batch(texts):  # (list[str]) -> list[list[float]]
     Tip: create the client ONCE (pass it in, or module-level) rather than per call.
     Keep batches ~50–100 chunks to stay under token limits.
     """
-    response = _client.embeddings.create(model = config.EMBEDDING_MODEL, input = texts)
+    response = _get_client().embeddings.create(model = config.EMBEDDING_MODEL, input = texts)
     return [d.embedding for d in response.data]
 
 
@@ -198,7 +209,7 @@ def iter_course_dirs():  # () -> Iterator[Path]
             yield p
 
 
-def build_chunks_for_course(course_dir):  # (Path) -> list[Chunk]
+def build_chunks_for_course(course_dir, chunker=chunk_text):  # (Path, callable) -> list[Chunk]
     """Extract + chunk every file in one course folder into Chunk objects.
 
     Recipe:
@@ -231,9 +242,9 @@ def build_chunks_for_course(course_dir):  # (Path) -> list[Chunk]
         else:
             continue
         for raw_text, section in pieces:
-            for piece in chunk_text(raw_text):
+            for piece in chunker(raw_text):
                 chunks.append(Chunk(piece, course, path.name, section))
-    return chunks 
+    return chunks
 
 
 def ingest():  # () -> None

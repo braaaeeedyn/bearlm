@@ -15,12 +15,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, rag
+from . import config, db, rag
+
+MAX_PDF_BYTES = 50 * 1024 * 1024  # reject uploads larger than 50 MB
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 
@@ -34,11 +36,34 @@ class AskRequest(BaseModel):
 class Citation(BaseModel):
     course: str
     section: str
+    source: str | None = None  # source filename (e.g. "61a_txtbk.pdf"), for deep-linking
 
 
 class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
+    source: str = "corpus"  # "project" | "upload" | "corpus" | "none"
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+
+
+def _require_local() -> None:
+    if config.BACKEND != "local":
+        raise HTTPException(status_code=400, detail="Projects/uploads require BACKEND=local.")
+
+
+async def _read_pdf(file: UploadFile) -> bytes:
+    """Read an uploaded file, enforcing PDF type and a size cap."""
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf files are supported.")
+    data = await file.read()
+    if len(data) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="PDF exceeds the 50 MB limit.")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    return data
 
 
 def _log_query(question: str, citations: list[dict]) -> None:
@@ -66,13 +91,142 @@ def ask(req: AskRequest) -> AskResponse:
     return AskResponse(
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
+        source=result.source,
     )
+
+
+# ---------------------------------------------------------------------------
+# Projects (persistent, grounded project-first) — local backend only
+# ---------------------------------------------------------------------------
+
+@app.get("/api/projects")
+def list_projects() -> dict:
+    _require_local()
+    from . import projects
+
+    return {"projects": projects.list_projects()}
+
+
+@app.post("/api/projects")
+def create_project(req: CreateProjectRequest) -> dict:
+    _require_local()
+    from . import projects
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Project name is required.")
+    try:
+        return projects.create_project(name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/projects/{slug}")
+def get_project(slug: str) -> dict:
+    _require_local()
+    from . import projects
+
+    meta = projects.get_project(slug)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    return projects.public(meta)
+
+
+@app.delete("/api/projects/{slug}")
+def delete_project(slug: str) -> dict:
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    projects.delete_project(slug)
+    return {"deleted": slug}
+
+
+@app.post("/api/projects/{slug}/pdfs")
+async def add_project_pdf(slug: str, file: UploadFile = File(...)) -> dict:
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    data = await _read_pdf(file)
+    return projects.add_pdf_to_project(slug, data, file.filename)
+
+
+@app.post("/api/projects/{slug}/ask", response_model=AskResponse)
+def ask_project(slug: str, req: AskRequest) -> AskResponse:
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    question = req.question.strip()
+    if not question:
+        return AskResponse(answer="Please enter a question.", citations=[], source="none")
+    result = rag.answer_grounded(
+        question, primary_collection=projects.project_collection(slug), primary_label="project"
+    )
+    projects.append_history(slug, question, result.text, result.citations, result.source)
+    return AskResponse(
+        answer=result.text,
+        citations=[Citation(**c) for c in result.citations],
+        source=result.source,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc uploads (ephemeral, strictly grounded to the one PDF)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/uploads")
+async def create_upload(file: UploadFile = File(...)) -> dict:
+    _require_local()
+    from . import projects
+
+    data = await _read_pdf(file)
+    return projects.create_upload(data, file.filename)
+
+
+@app.post("/api/uploads/{uid}/ask", response_model=AskResponse)
+def ask_upload(uid: str, req: AskRequest) -> AskResponse:
+    _require_local()
+    from . import projects
+
+    question = req.question.strip()
+    if not question:
+        return AskResponse(answer="Please enter a question.", citations=[], source="none")
+    # Uploads are strictly grounded to their own PDF — no corpus fallback.
+    result = rag.answer_grounded(
+        question,
+        primary_collection=projects.upload_collection(uid),
+        primary_label="upload",
+        allow_fallback=False,
+    )
+    return AskResponse(
+        answer=result.text,
+        citations=[Citation(**c) for c in result.citations],
+        source=result.source,
+    )
+
+
+@app.delete("/api/uploads/{uid}")
+def delete_upload(uid: str) -> dict:
+    _require_local()
+    from . import projects
+
+    projects.delete_upload(uid)
+    return {"deleted": uid}
 
 
 @app.get("/api/courses")
 def courses() -> dict:
     """Distinct course labels actually present in the corpus (for the footer)."""
     try:
+        if config.BACKEND == "local":
+            from . import local_store
+
+            return {"courses": local_store.distinct_courses()}
         return {"courses": sorted(db.get_chunks_collection().distinct("course"))}
     except Exception:
         return {"courses": []}
@@ -130,9 +284,44 @@ def stats() -> dict:
     }
 
 
+def _serve_within(base: Path, *parts: str) -> FileResponse:
+    """Serve a file under `base`, refusing any path that escapes it (traversal).
+
+    Served inline (no `filename=`) so PDFs open in-tab and honor `#page=N`.
+    """
+    base = base.resolve()
+    target = base.joinpath(*parts).resolve()
+    if base not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="Source not found")
+    return FileResponse(target)
+
+
+@app.get("/source/{course}/{filename}")
+def source_file(course: str, filename: str) -> FileResponse:
+    """Serve a raw course textbook PDF so citations can deep-link to it."""
+    return _serve_within(config.RAW_DIR, course, filename)
+
+
+@app.get("/projects/{slug}/pdfs/{filename}")
+def project_pdf(slug: str, filename: str) -> FileResponse:
+    """Serve a project's PDF for citation deep-links."""
+    return _serve_within(config.PROJECTS_DIR, slug, "pdfs", filename)
+
+
+@app.get("/uploads/{uid}/{filename}")
+def upload_pdf(uid: str, filename: str) -> FileResponse:
+    """Serve an ad-hoc upload's PDF for citation deep-links."""
+    return _serve_within(config.UPLOADS_DIR, uid, filename)
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/projects")
+def projects_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "projects.html")
 
 
 @app.get("/analytics")

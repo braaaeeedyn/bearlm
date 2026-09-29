@@ -53,12 +53,20 @@ CHAT_MODEL = "gpt-4o-mini"
 class Answer:
     text: str
     citations: list[dict]
+    source: str = "corpus"  # which collection answered: "project" | "upload" | "corpus" | "none"
 
 # ---------------------------------------------------------------------------
 # 1. RETRIEVAL  — question  ->  top-k most similar chunks
 # ---------------------------------------------------------------------------
 
 def retrieve(question, k=None):  # (str, int|None) -> list[dict]
+    """Backend-dispatching retrieval. See _retrieve_openai / _retrieve_local."""
+    if config.BACKEND == "local":
+        return _retrieve_local(question, k)
+    return _retrieve_openai(question, k)
+
+
+def _retrieve_openai(question, k=None):  # (str, int|None) -> list[dict]
     """Embed the question and return the top-k most similar chunk documents.
 
     Recipe:
@@ -159,9 +167,199 @@ def build_prompt(question, chunks):  # (str, list[dict]) -> list[dict]
 # 3. ANSWER  — tie retrieval + prompt + chat model together
 # ---------------------------------------------------------------------------
 
-_client = OpenAI()  # TODO(you): create the OpenAI client once (module-level or lazily)
+_client = OpenAI() if config.BACKEND == "openai" else None
+
+
+# ---------------------------------------------------------------------------
+# LOCAL BACKEND (Ollama + Chroma + optional reranker) — Phases 3 & 4
+# ---------------------------------------------------------------------------
+
+# Strict grounding prompt: answer only from context, exact refusal string, and
+# keep the LaTeX instruction so the web UI's KaTeX rendering still works.
+_STRICT_SYSTEM = (
+    "You are BearLM, a study assistant for UC Berkeley CS/DS courses. "
+    "Answer the question using ONLY the provided context. "
+    "If the answer is not contained in the context, reply with exactly: "
+    "\"I don't know based on the course materials.\" "
+    "Cite sources inline as (course section). "
+    "Write mathematical notation in LaTeX: inline math in $...$ and display "
+    "equations in $$...$$."
+)
+
+
+def _format_docs(docs):
+    """Render retrieved LangChain Documents into the tagged context block."""
+    out = []
+    for d in docs:
+        m = d.metadata or {}
+        out.append(f"[{m.get('course', '?')} {m.get('section', '?')}] {d.page_content}")
+    return "\n\n".join(out)
+
+
+def _get_llm():
+    from langchain_ollama import ChatOllama
+
+    return ChatOllama(
+        model=config.OLLAMA_CHAT_MODEL,
+        temperature=0,
+        num_ctx=config.OLLAMA_NUM_CTX,
+        base_url=config.OLLAMA_BASE_URL,
+    )
+
+
+def _retrieve_local(question, k=None):
+    """Retrieve (and optionally rerank) Chroma documents for a question."""
+    from . import local_store
+
+    if config.RERANK_ENABLED:
+        from . import rerank
+
+        candidates = local_store.get_retriever(config.RERANK_CANDIDATES).invoke(question)
+        return rerank.rerank(question, candidates, config.RERANK_TOP_N)
+    return local_store.get_retriever(k or config.RETRIEVAL_K).invoke(question)
+
+
+def build_chain(k=None):
+    """The Phase 3 LCEL chain: retriever | prompt | llm | StrOutputParser().
+
+    Returns a runnable that maps a question string -> answer string. Reranking,
+    when enabled, is folded into the retrieval step. Citations are added by
+    `answer()`, which needs the documents themselves.
+    """
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
+    )
+    retrieve_docs = RunnableLambda(lambda q: _retrieve_local(q, k))
+    return (
+        {"context": retrieve_docs | _format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | _get_llm()
+        | StrOutputParser()
+    )
+
+
+def _answer_local(question, k=None):  # (str, int|None) -> Answer
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+
+    docs = _retrieve_local(question, k)
+    if not docs:
+        return Answer("I don't know based on the course materials.", [])
+
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
+    )
+    chain = prompt | _get_llm() | StrOutputParser()
+    text = chain.invoke({"context": _format_docs(docs), "question": question})
+
+    seen, citations = set(), []
+    for d in docs:
+        m = d.metadata or {}
+        key = (m.get("course"), m.get("section"))
+        if key not in seen:
+            seen.add(key)
+            citations.append({
+                "course": m.get("course"),
+                "section": m.get("section"),
+                "source": m.get("source"),
+            })
+    return Answer(text, citations)
+
+
+def _dedupe_citations(docs):
+    seen, citations = set(), []
+    for d in docs:
+        m = d.metadata or {}
+        key = (m.get("course"), m.get("section"), m.get("source"))
+        if key not in seen:
+            seen.add(key)
+            citations.append({
+                "course": m.get("course"),
+                "section": m.get("section"),
+                "source": m.get("source"),
+            })
+    return citations
+
+
+# ---------------------------------------------------------------------------
+# GROUNDED ANSWERS with a confidence gate (projects + uploads, anti-hallucination)
+# ---------------------------------------------------------------------------
+
+def _confident_docs(question, collection_name):
+    """Vector-retrieve a pool from one collection, rerank, and keep only chunks
+    whose cross-encoder relevance clears config.RERANK_MIN_SCORE.
+
+    The reranker score is the confidence gate: metric-independent and calibrated,
+    so a weak/irrelevant collection yields an empty list (→ refuse or fall back)
+    instead of forcing a plausible-sounding but ungrounded answer.
+    """
+    from . import local_store, rerank
+
+    vs = local_store.get_vectorstore(collection_name)
+    candidates = vs.similarity_search(question, k=config.RERANK_CANDIDATES)
+    if not candidates:
+        return []
+    scored = rerank.rerank_scored(question, candidates)
+    strong = [d for d, s in scored if s >= config.RERANK_MIN_SCORE]
+    return strong[: config.RERANK_TOP_N]
+
+
+def answer_grounded(question, primary_collection=None, primary_label="project",
+                    allow_fallback=None):
+    """Grounded answer with a confidence gate and project-first fallback.
+
+    - Try the primary collection (a project or an upload). If confident chunks
+      exist, answer from them (source = primary_label).
+    - Else, if fallback is allowed, try the main course corpus.
+    - Else refuse with config.GROUNDED_REFUSAL rather than guess.
+    """
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+
+    if allow_fallback is None:
+        allow_fallback = config.PROJECT_FALLBACK_TO_CORPUS
+
+    docs, used = [], "none"
+    if primary_collection:
+        docs = _confident_docs(question, primary_collection)
+        if docs:
+            used = primary_label
+    if not docs and (allow_fallback or not primary_collection):
+        docs = _confident_docs(question, config.CHROMA_COLLECTION)
+        if docs:
+            used = "corpus"
+
+    if not docs:
+        return Answer(config.GROUNDED_REFUSAL, [], source="none")
+
+    system = (
+        "You are BearLM, a grounded study assistant. Answer the question using "
+        "ONLY the provided context. If the answer is not fully contained in the "
+        f"context, reply with exactly: \"{config.GROUNDED_REFUSAL}\" "
+        "Cite sources inline as (course section). Write math in LaTeX: inline "
+        "in $...$ and display in $$...$$."
+    )
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", system), ("human", "Context:\n{context}\n\nQuestion: {question}")]
+    )
+    text = (prompt | _get_llm() | StrOutputParser()).invoke(
+        {"context": _format_docs(docs), "question": question}
+    )
+    return Answer(text, _dedupe_citations(docs), source=used)
+
 
 def answer(question, k=None):  # (str, int|None) -> Answer
+    """Backend-dispatching entry point the UI/eval call."""
+    if config.BACKEND == "local":
+        return _answer_local(question, k)
+    return _answer_openai(question, k)
+
+
+def _answer_openai(question, k=None):  # (str, int|None) -> Answer
     """The public entry point the UI will call: question in, cited Answer out.
 
     Recipe:
@@ -192,7 +390,11 @@ def answer(question, k=None):  # (str, int|None) -> Answer
         key = (chunk["course"], chunk["section"])
         if key not in seen:
             seen.add(key)
-            citations.append({"course": chunk["course"], "section": chunk["section"]})
+            citations.append({
+                "course": chunk["course"],
+                "section": chunk["section"],
+                "source": chunk.get("filename"),
+            })
     return Answer(text, citations)
 
 
