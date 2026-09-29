@@ -1,9 +1,15 @@
 # BearLM 🐻
 
 A **retrieval-augmented Q&A assistant** grounded in UC Berkeley CS/DS course
-materials (CS61A, CS61B, CS70, CS188, Data 8, Data 100). Ask a question, get an
-answer that is **cited back to the source** (course + section) and refuses to
-answer when the corpus doesn't cover it.
+materials (CS61A, CS61B, CS70, CS188, CS189, Data 8, Data 100, plus your own
+added courses). Ask a question, get an answer that is **cited back to the source**
+(course + section, deep-linked to the exact PDF page) and **refuses rather than
+guessing** when the material doesn't cover it.
+
+Beyond the shared course corpus, BearLM has **Projects** — bring your own PDFs,
+hold multi-turn grounded conversations over them, and get project-first answers
+that fall back to the course corpus only when your documents don't cover the
+question. See [Projects & your own PDFs](#projects--your-own-pdfs).
 
 BearLM runs in two interchangeable backends, selected by the `BACKEND` env var:
 
@@ -106,6 +112,67 @@ BACKEND=local uv run python -m bearlm.rag              # terminal smoke test
 Set `BACKEND=openai` and provide `OPENAI_API_KEY` + `MONGODB_URI` in `.env`
 (the Atlas `chunks` collection + `vector_index` must already exist).
 
+> Adding a course to the shared corpus: drop `.pdf`/`.md`/`.ipynb` files (or clone
+> a repo) into `data/raw/<course>/`, then re-run `bearlm.local_store`. The course
+> label is the folder name. Re-ingest rebuilds the whole store (it is not
+> incremental). The current corpus is ~10.4k chunks across 10 courses.
+
+---
+
+## Projects & your own PDFs
+
+Open `/projects` in the app (local backend only). Everything here is grounded and
+local — no keys, no cloud.
+
+**Projects** (persistent) — a named folder of your PDFs plus its own vector
+collection:
+- Add PDFs from the sidebar; each is embedded into the project's collection.
+- Hold **multiple chats** per project — each a persistent, multi-turn conversation.
+  The whole conversation is fed back as context every turn, so follow-ups
+  ("what about its top speed?") resolve against history.
+- **Project-first retrieval:** answers come from your PDFs when they cover the
+  question, and fall back to the course corpus otherwise
+  (`PROJECT_FALLBACK_TO_CORPUS`).
+- **Reset context** clears a project's chats but keeps its PDFs — a one-click way
+  to cut drift/hallucination from long histories.
+- On open, projects older than a week prompt you to delete them.
+
+**Chat with a PDF** (ad-hoc) — upload one PDF for a throwaway session answered
+**strictly** from that document (no corpus fallback).
+
+**Anti-hallucination** applies to both:
+- **Strict prompt** + an exact refusal string when the answer isn't in context.
+- **Confidence gate** — a `bge-reranker` cross-encoder scores each retrieved
+  chunk; anything below `RERANK_MIN_SCORE` is dropped, and if nothing clears the
+  bar the answer is refused rather than guessed. (Summary/"what's in this doc"
+  questions bypass the gate, since they're topically orthogonal to any one passage.)
+- **Always-on citations** that deep-link to the source PDF at the cited page.
+
+Storage: projects live under `data/projects/<slug>/` (PDFs + `project.json` with
+chats); uploads under `data/uploads/`. Both are gitignored.
+
+---
+
+## Configuration
+
+All settings have env overrides (see `.env.example`); defaults live in
+`src/bearlm/config.py`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BACKEND` | `openai` | `local` (Ollama+Chroma) or `openai` (OpenAI+Atlas). `.env` sets `local`. |
+| `OLLAMA_CHAT_MODEL` | `llama3.1:8b` | Local generator (`qwen2.5:3b` for <8 GB VRAM). |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Local embeddings (768-dim). |
+| `OLLAMA_NUM_CTX` | `8192` | Generator context window. |
+| `CHROMA_DIR` | `./db` | On-disk Chroma store. |
+| `RETRIEVAL_K` | `4` | Chunks fed to the LLM. |
+| `RERANK_ENABLED` | `false` | Rerank corpus retrieval (retrieve 15 → keep 4). |
+| `RERANK_MIN_SCORE` | `0.02` | Confidence gate for project/upload answers. |
+| `PROJECT_FALLBACK_TO_CORPUS` | `true` | Let project answers fall back to the corpus. |
+| `MIN_RELEVANCE` | `0.30` | Vector-relevance floor (reserved). |
+
+For the OpenAI backend, `OPENAI_API_KEY` and `MONGODB_URI` are required.
+
 ---
 
 ## Evaluation
@@ -145,14 +212,35 @@ assumptions you can edit at the top of `report.py`.
 
 ```
 src/bearlm/
-  config.py          # BACKEND flag + all constants (OpenAI + local)
+  config.py          # BACKEND flag + all constants (OpenAI + local + projects)
   db.py              # MongoDB Atlas helpers (openai backend)
   doc_processor.py   # extract + chunk + OpenAI-embed + Atlas ingest
   text_splitter.py   # token-based RecursiveCharacterTextSplitter (local)
-  local_store.py     # Ollama embeddings + Chroma store + local ingest
-  rerank.py          # bge-reranker-base CrossEncoder (local, optional)
-  rag.py             # retrieve/answer, backend-dispatched; LCEL build_chain
-  api.py             # FastAPI: /api/ask, /api/stats, serves web/
-web/                 # hand-built frontend (index + analytics, light/dark)
+  local_store.py     # Ollama embeddings + multi-collection Chroma + ingest
+  rerank.py          # bge-reranker-base CrossEncoder (rerank + scored)
+  rag.py             # retrieve/answer + answer_grounded (gate, fallback, chat)
+  projects.py        # projects, chats, ad-hoc uploads, per-PDF collections
+  api.py             # FastAPI: ask, projects/chats, uploads, PDF serving
+web/                 # hand-built frontend, light/dark, shared render.js
+  index.html         # Ask page (course corpus Q&A)
+  projects.html      # Projects: sidebar + multi-turn chat
+  analytics.html     # usage analytics (OpenAI backend)
 eval/                # questions.jsonl + retrieval/answer eval + report
+```
+
+### Key HTTP endpoints
+
+```
+POST /api/ask                                   ask the course corpus
+GET  /api/courses                               live course list (from Chroma)
+POST /api/projects            GET /api/projects  create / list projects
+GET/DELETE /api/projects/{slug}                 fetch / delete a project
+POST /api/projects/{slug}/pdfs                  add a PDF to a project
+POST /api/projects/{slug}/reset                 clear chats, keep PDFs
+POST /api/projects/{slug}/chats                 new chat
+GET/DELETE /api/projects/{slug}/chats/{id}      fetch / delete a chat
+POST /api/projects/{slug}/chats/{id}/ask        multi-turn grounded ask
+POST/DELETE /api/uploads[/{id}]                 ad-hoc PDF upload / cleanup
+GET  /source/{course}/{file}                    serve a corpus PDF (deep-link)
+GET  /projects/{slug}/pdfs/{file}               serve a project PDF (deep-link)
 ```
