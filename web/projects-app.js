@@ -120,17 +120,76 @@
     renderChatList(p.chats || []);
   }
 
+  let pdfView = "list";
+  try { pdfView = localStorage.getItem("bearlm-pdfview") || "list"; } catch (e) {}
+  let lastPdfs = [];
+
+  function pdfUrl(filename) {
+    return "/projects/" + encodeURIComponent(currentSlug) + "/pdfs/" + encodeURIComponent(filename);
+  }
+
+  function removeBtn(filename) {
+    const x = document.createElement("button");
+    x.className = "side-doc-x"; x.type = "button"; x.title = "Remove PDF"; x.textContent = "✕";
+    x.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); removePdf(filename); });
+    return x;
+  }
+
   function renderDocList(pdfs) {
+    lastPdfs = pdfs || [];
     const wrap = $("projDocList");
+    wrap.setAttribute("data-view", pdfView);
     wrap.innerHTML = "";
-    if (!pdfs.length) { wrap.innerHTML = '<p class="side-empty">No PDFs yet.</p>'; return; }
-    pdfs.forEach(function (d) {
-      const row = document.createElement("div");
-      row.className = "side-doc";
-      row.innerHTML = '<span class="side-doc-name"></span><span class="side-doc-meta">' + d.chunks + '</span>';
-      row.querySelector(".side-doc-name").textContent = d.filename;
-      wrap.appendChild(row);
+    if (!lastPdfs.length) { wrap.innerHTML = '<p class="side-empty">No PDFs yet.</p>'; return; }
+
+    lastPdfs.forEach(function (d) {
+      if (pdfView === "grid") {
+        // Clickable thumbnail image that opens the PDF in a new tab.
+        const tile = document.createElement("div");
+        tile.className = "side-tile";
+        const a = document.createElement("a");
+        a.className = "side-tile-link"; a.href = pdfUrl(d.filename);
+        a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "Open " + d.filename;
+        const img = document.createElement("img");
+        img.className = "side-tile-img"; img.loading = "lazy"; img.alt = d.filename;
+        img.src = pdfUrl(d.filename) + "/thumb";
+        const cap = document.createElement("span");
+        cap.className = "side-tile-name"; cap.textContent = d.filename;
+        a.appendChild(img); a.appendChild(cap);
+        tile.appendChild(a); tile.appendChild(removeBtn(d.filename));
+        wrap.appendChild(tile);
+      } else {
+        // List row: click the name to open the PDF in a new tab.
+        const row = document.createElement("div");
+        row.className = "side-doc";
+        const a = document.createElement("a");
+        a.className = "side-doc-open"; a.href = pdfUrl(d.filename);
+        a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = "Open " + d.filename;
+        a.textContent = d.filename;
+        const meta = document.createElement("span");
+        meta.className = "side-doc-meta"; meta.textContent = d.chunks;
+        row.appendChild(a); row.appendChild(meta); row.appendChild(removeBtn(d.filename));
+        wrap.appendChild(row);
+      }
     });
+  }
+
+  function togglePdfView() {
+    pdfView = pdfView === "list" ? "grid" : "list";
+    try { localStorage.setItem("bearlm-pdfview", pdfView); } catch (e) {}
+    renderDocList(lastPdfs);
+  }
+
+  async function removePdf(filename) {
+    if (!currentSlug || busy) return;
+    if (!confirm('Remove "' + filename + '" from this project? Its chunks will be deleted.')) return;
+    busy = true;
+    try {
+      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/pdfs/" + encodeURIComponent(filename), { method: "DELETE" });
+      await refreshProject();
+      await loadProjects();
+    } catch (e) { alert(e.message); }
+    finally { busy = false; }
   }
 
   function renderChatList(chats) {
@@ -330,6 +389,7 @@
   $("backToProjects").addEventListener("click", showProjectsList);
   $("addPdfBtn").addEventListener("click", function () { $("projPdfInput").click(); });
   $("projPdfInput").addEventListener("change", function () { addProjectPdf(this); });
+  $("pdfViewToggle").addEventListener("click", togglePdfView);
   $("deleteProjectBtn").addEventListener("click", deleteProject);
   $("resetCtxBtn").addEventListener("click", resetContext);
   $("newChatBtn").addEventListener("click", newChat);

@@ -78,14 +78,17 @@ def ingest_pdf_into_collection(pdf_path, collection_name: str, course_label: str
     n = 0
     for raw_text, section in pieces:
         for piece in text_splitter.split_text(raw_text):
+            # IDs are namespaced by source filename so adding a second PDF to a
+            # project can't collide with / overwrite an existing PDF's chunks.
+            cid = f"{collection_name}:{pdf_path.name}:{n}"
             texts.append(piece)
             metadatas.append({
                 "course": course_label,
                 "section": section,
                 "source": pdf_path.name,
-                "chunk_id": f"{collection_name}:{n}",
+                "chunk_id": cid,
             })
-            ids.append(f"{collection_name}:{n}")
+            ids.append(cid)
             n += 1
 
     for i in range(0, len(texts), batch_size):
@@ -184,6 +187,14 @@ def collection_count(collection_name: str) -> int:
         return get_vectorstore(collection_name)._collection.count()
     except Exception:
         return 0
+
+
+def delete_pdf_from_collection(collection_name: str, filename: str) -> None:
+    """Delete all chunks that came from one PDF (matched by `source` metadata)."""
+    try:
+        get_vectorstore(collection_name)._collection.delete(where={"source": filename})
+    except Exception:
+        pass
 
 
 def distinct_courses() -> list[str]:

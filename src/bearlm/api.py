@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -152,6 +152,16 @@ async def add_project_pdf(slug: str, file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=404, detail="No such project.")
     data = await _read_pdf(file)
     return projects.add_pdf_to_project(slug, data, file.filename)
+
+
+@app.delete("/api/projects/{slug}/pdfs/{filename}")
+def remove_project_pdf(slug: str, filename: str) -> dict:
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    return projects.remove_pdf(slug, filename)
 
 
 # --- chats within a project (multi-turn) ------------------------------------
@@ -363,6 +373,35 @@ def source_file(course: str, filename: str) -> FileResponse:
 def project_pdf(slug: str, filename: str) -> FileResponse:
     """Serve a project's PDF for citation deep-links."""
     return _serve_within(config.PROJECTS_DIR, slug, "pdfs", filename)
+
+
+def _render_pdf_thumb(path: Path, width: int = 300) -> bytes:
+    """Render a PDF's first page to a PNG (for the grid view)."""
+    import pymupdf
+
+    doc = pymupdf.open(path)
+    try:
+        page = doc[0]
+        zoom = max(width / max(page.rect.width, 1), 0.1)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+@app.get("/projects/{slug}/pdfs/{filename}/thumb")
+def project_pdf_thumb(slug: str, filename: str) -> Response:
+    """First-page PNG thumbnail of a project PDF (grid view)."""
+    base = config.PROJECTS_DIR.resolve()
+    target = (base / slug / "pdfs" / filename).resolve()
+    if base not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        png = _render_pdf_thumb(target)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Could not render thumbnail")
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "max-age=3600"})
 
 
 @app.get("/uploads/{uid}/{filename}")

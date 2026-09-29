@@ -189,6 +189,22 @@ def clear_chats(slug: str) -> None:
     _save(meta)
 
 
+def remove_pdf(slug: str, filename: str) -> dict:
+    """Remove one PDF from a project: delete its chunks, file, and metadata entry."""
+    meta = get_project(slug)
+    if meta is None:
+        raise ValueError(f"No such project: {slug}")
+    safe = Path(filename).name
+    local_store.delete_pdf_from_collection(project_collection(slug), safe)
+    try:
+        (_project_dir(slug) / "pdfs" / safe).unlink()
+    except FileNotFoundError:
+        pass
+    meta["pdfs"] = [p for p in meta.get("pdfs", []) if p["filename"] != safe]
+    _save(meta)
+    return {"removed": safe}
+
+
 def append_message(slug: str, chat_id: str, role: str, content: str,
                    citations: list[dict] | None = None, source: str | None = None) -> dict | None:
     """Append one message to a chat; title the chat from its first user message."""

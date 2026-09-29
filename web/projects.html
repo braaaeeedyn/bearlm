@@ -53,10 +53,11 @@
         <div class="side-section side-pdfs">
           <div class="side-head">
             <span class="side-label">Reference PDFs</span>
+            <button id="pdfViewToggle" class="side-mini" type="button" title="Toggle list / grid view" aria-label="Toggle PDF view">▦</button>
             <button id="addPdfBtn" class="side-mini" type="button" title="Add PDF">＋</button>
             <input id="projPdfInput" type="file" accept="application/pdf,.pdf" hidden />
           </div>
-          <div class="side-list side-doclist" id="projDocList"></div>
+          <div class="side-doclist" id="projDocList" data-view="list"></div>
         </div>
 
         <div class="side-section side-chats">
