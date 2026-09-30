@@ -25,6 +25,7 @@
   let currentSlug = null;
   let currentChatId = null;
   let busy = false;
+  let chatLastOptimized = null;  // {original, optimized} for provenance
 
   // --- helpers ---------------------------------------------------------------
   function show(el) { el.classList.remove("hidden"); }
@@ -305,6 +306,11 @@
     if (msg.role === "user") {
       wrap.textContent = msg.content;
     } else {
+      // provenance (your message vs. optimized prompt / rewritten query) — live turn only
+      if (msg.provenance) {
+        const p = window.BearLM.provenanceNode(msg.provenance);
+        if (p) wrap.appendChild(p);
+      }
       const body = document.createElement("div");
       body.className = "answer-body";
       body.innerHTML = window.BearLM.renderMarkdown(msg.content || "");
@@ -351,6 +357,9 @@
     // clear the "new chat" hint if present
     const hint = $("chatScroll").querySelector(".chat-hint");
     if (hint) hint.remove();
+    const originalMsg = (chatLastOptimized && question === chatLastOptimized.optimized)
+      ? chatLastOptimized.original : null;
+    chatLastOptimized = null;
     appendMessage({ role: "user", content: question });
     const thinking = appendMessage({ role: "assistant", content: "_…thinking…_", source: null });
     thinking.classList.add("msg-thinking");
@@ -360,7 +369,10 @@
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: question, rewrite: rewrite }),
       });
       thinking.remove();
-      appendMessage({ role: "assistant", content: data.answer, citations: data.citations, source: data.source });
+      appendMessage({
+        role: "assistant", content: data.answer, citations: data.citations, source: data.source,
+        provenance: { original: originalMsg, sent: originalMsg ? question : null, rewritten: data.rewritten_query || null },
+      });
       refreshProject();  // update chat title/updated in sidebar
     } catch (e) {
       thinking.remove();
@@ -408,7 +420,10 @@
       try {
         const optimized = await window.BearLM.optimizePrompt(text);
         if (!optimized) chatSuggest.hidden = true;
-        else window.BearLM.showSuggestion(chatSuggest, optimized, function (t) { chatInput.value = t; chatInput.focus(); });
+        else window.BearLM.showSuggestion(chatSuggest, optimized, function (t) {
+          chatInput.value = t; chatInput.focus();
+          chatLastOptimized = { original: text, optimized: t };
+        });
       } catch (e) {
         window.BearLM.suggestMessage(chatSuggest, e.message);
       } finally {

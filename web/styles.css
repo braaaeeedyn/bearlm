@@ -740,3 +740,17 @@ body.proj-body { height: 100vh; margin: 0; display: flex; overflow: hidden; }
 .practice-a { margin-top: 6px; font-size: 14px; }
 .practice-a summary { cursor: pointer; color: var(--accent); font-size: 13px; }
 .practice-a > div { margin-top: 6px; color: var(--subtle); line-height: 1.5; }
+
+/* Prompt provenance: your message vs. optimized prompt / rewritten query */
+.provenance {
+  background: var(--surface-soft); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 14px; margin-bottom: 14px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.prov-row { display: flex; gap: 10px; font-size: 13px; line-height: 1.45; }
+.prov-key {
+  flex: none; min-width: 132px; font-family: var(--font-mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding-top: 2px;
+}
+.prov-val { color: var(--body); }
+.msg-assistant .provenance { margin-bottom: 10px; }

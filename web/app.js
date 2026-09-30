@@ -43,6 +43,7 @@
 
   // --- Ask flow --------------------------------------------------------------
   let pending = false;
+  let lastOptimized = null;  // {original, optimized} — set when a suggestion is accepted
 
   async function ask(question) {
     if (pending || !question.trim()) return;
@@ -50,6 +51,11 @@
     submit.disabled = true;
     if (suggestions) suggestions.classList.add("hidden");
     showLoading();
+
+    // If this question was produced by the optimizer, remember the original.
+    const originalMsg = (lastOptimized && question === lastOptimized.optimized)
+      ? lastOptimized.original : null;
+    lastOptimized = null;
 
     try {
       const rewrite = !!(rewriteToggle && rewriteToggle.checked);
@@ -60,7 +66,12 @@
       });
       if (!resp.ok) throw new Error("Request failed (" + resp.status + ")");
       const data = await resp.json();
-      showAnswer(data);
+      const provenance = {
+        original: originalMsg,
+        sent: originalMsg ? question : null,
+        rewritten: data.rewritten_query || null,
+      };
+      window.BearLM.renderResult(result, data, { showBadge: false, provenance: provenance });
     } catch (err) {
       showError("Couldn't reach BearLM. Is the server running? (" + err.message + ")");
     } finally {
@@ -89,7 +100,10 @@
       try {
         const optimized = await window.BearLM.optimizePrompt(text);
         if (!optimized) { suggestPanel.hidden = true; }
-        else window.BearLM.showSuggestion(suggestPanel, optimized, function (t) { input.value = t; input.focus(); });
+        else window.BearLM.showSuggestion(suggestPanel, optimized, function (t) {
+          input.value = t; input.focus();
+          lastOptimized = { original: text, optimized: t };  // remember for provenance
+        });
       } catch (e) {
         window.BearLM.suggestMessage(suggestPanel, e.message);
       } finally {

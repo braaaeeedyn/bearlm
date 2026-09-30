@@ -68,12 +68,38 @@
     none: { text: "Not found in sources", cls: "badge-none" },
   };
 
-  // Render an answer (+ optional source badge + citations) into `resultEl`.
-  // data: { answer, citations, source }.  ctx: { slug?, uid?, showBadge? }.
+  // A "what was sent to the model" panel: your message vs. the optimized prompt
+  // and/or the rewritten retrieval query. prov = { original, sent, rewritten }.
+  function provenanceNode(prov) {
+    if (!prov) return null;
+    const rows = [];
+    if (prov.original) rows.push(["Your message", prov.original]);
+    if (prov.sent && prov.sent !== prov.original) rows.push(["Optimized prompt sent", prov.sent]);
+    if (prov.rewritten) rows.push(["Retrieval query used", prov.rewritten]);
+    if (!rows.length) return null;
+    const box = document.createElement("div");
+    box.className = "provenance";
+    rows.forEach(function (r) {
+      const row = document.createElement("div");
+      row.className = "prov-row";
+      const k = document.createElement("span");
+      k.className = "prov-key"; k.textContent = r[0];
+      const v = document.createElement("span");
+      v.className = "prov-val"; v.textContent = r[1];
+      row.appendChild(k); row.appendChild(v);
+      box.appendChild(row);
+    });
+    return box;
+  }
+
+  // Render an answer (+ optional provenance + source badge + citations) into `resultEl`.
+  // data: { answer, citations, source }.  ctx: { slug?, uid?, showBadge?, provenance? }.
   function renderResult(resultEl, data, ctx) {
     ctx = ctx || {};
     const source = data.source || "corpus";
     resultEl.innerHTML = "";
+    const prov = provenanceNode(ctx.provenance);
+    if (prov) resultEl.appendChild(prov);
 
     const card = document.createElement("div");
     card.className = "card reveal";
@@ -196,5 +222,6 @@
     optimizePrompt: optimizePrompt,
     showSuggestion: showSuggestion,
     suggestMessage: suggestMessage,
+    provenanceNode: provenanceNode,
   };
 })();

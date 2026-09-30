@@ -68,6 +68,7 @@ class AskResponse(BaseModel):
     answer: str
     citations: list[Citation]
     source: str = "corpus"  # "project" | "upload" | "corpus" | "none"
+    rewritten_query: str | None = None  # LLM-rewritten retrieval query, if used
 
 
 class CreateProjectRequest(BaseModel):
@@ -125,6 +126,7 @@ def ask(req: AskRequest) -> AskResponse:
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
         source=result.source,
+        rewritten_query=result.rewritten_query,
     )
 
 
@@ -283,6 +285,7 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
         source=result.source,
+        rewritten_query=result.rewritten_query,
     )
 
 
@@ -319,6 +322,7 @@ def ask_upload(uid: str, req: AskRequest) -> AskResponse:
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
         source=result.source,
+        rewritten_query=result.rewritten_query,
     )
 
 

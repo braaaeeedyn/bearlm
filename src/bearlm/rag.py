@@ -54,6 +54,7 @@ class Answer:
     text: str
     citations: list[dict]
     source: str = "corpus"  # which collection answered: "project" | "upload" | "corpus" | "none"
+    rewritten_query: str | None = None  # the LLM-rewritten retrieval query, if one was used
 
 # ---------------------------------------------------------------------------
 # 1. RETRIEVAL  — question  ->  top-k most similar chunks
@@ -250,9 +251,10 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
     if rewrite is None:
         rewrite = config.QUERY_REWRITE_ENABLED
     rq = rewrite_query(question) if rewrite else question
+    rewritten = rq if (rewrite and rq != question) else None
     docs = _retrieve_local(rq, k)
     if not docs:
-        return Answer("I don't know based on the course materials.", [])
+        return Answer("I don't know based on the course materials.", [], rewritten_query=rewritten)
 
     prompt = ChatPromptTemplate.from_messages(
         [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
@@ -271,7 +273,7 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
                 "section": m.get("section"),
                 "source": m.get("source"),
             })
-    return Answer(text, citations)
+    return Answer(text, citations, rewritten_query=rewritten)
 
 
 def _dedupe_citations(docs):
@@ -421,7 +423,14 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
 
     from . import local_store
 
-    rq = _make_retrieval_query(question, history, rewrite)
+    if rewrite is None:
+        rewrite = config.QUERY_REWRITE_ENABLED
+    if rewrite:
+        rq = rewrite_query(question, history)
+        rewritten = rq if rq != question else None
+    else:
+        rq = _retrieval_query(question, history)
+        rewritten = None
     docs, used = [], "none"
     meta = _is_meta_question(question)
 
@@ -444,7 +453,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
             used = "corpus"
 
     if not docs:
-        return Answer(config.GROUNDED_REFUSAL, [], source="none")
+        return Answer(config.GROUNDED_REFUSAL, [], source="none", rewritten_query=rewritten)
 
     system = (
         "You are BearLM, a grounded study assistant having a conversation. Answer "
@@ -461,7 +470,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
 
     text = (_get_llm() | StrOutputParser()).invoke(msgs)
-    return Answer(text, _dedupe_citations(docs), source=used)
+    return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten)
 
 
 def answer(question, k=None, rewrite=None):  # (str, int|None, bool|None) -> Answer
