@@ -19,8 +19,14 @@
     return t.replace(/\u0000(\d+)\u0000/g, function (_, i) { return spans[+i]; });
   }
 
+  // LLMs sometimes wrap a whole Markdown answer (incl. tables) in a ```markdown
+  // fence, which would render as a raw code box. Unwrap those so it renders.
+  function unwrapMarkdownFence(text) {
+    return (text || "").replace(/```(?:markdown|md)\s*\n([\s\S]*?)```/gi, "$1");
+  }
+
   function renderMarkdown(text) {
-    const prepared = mathifyParens(text || "");
+    const prepared = mathifyParens(unwrapMarkdownFence(text || ""));
     const raw = window.marked ? window.marked.parse(prepared) : prepared;
     return window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
   }

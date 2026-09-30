@@ -183,8 +183,11 @@ _STRICT_SYSTEM = (
     "If the answer is not contained in the context, reply with exactly: "
     "\"I don't know based on the course materials.\" "
     "Cite sources inline as (course section). "
-    "Write mathematical notation in LaTeX: inline math in $...$ and display "
-    "equations in $$...$$."
+    "Format for a Markdown renderer. Use fenced code blocks ONLY for actual code, "
+    "tagged with the language (```python, ```sql). Write math in LaTeX (inline "
+    "$...$, display $$...$$). Present tabular or relational data as a Markdown "
+    "table written directly in the response — never wrap tables or the whole "
+    "answer in a code fence."
 )
 
 
@@ -464,7 +467,10 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
         "the latest question using ONLY the provided context (plus the conversation "
         "so far for reference). If the answer is not contained in the context, reply "
         f"with exactly: \"{config.GROUNDED_REFUSAL}\" Cite sources inline as "
-        "(course section). Write math in LaTeX: inline in $...$ and display in $$...$$."
+        "(course section). Format for a Markdown renderer: fenced code blocks ONLY "
+        "for actual code (```python, ```sql); math in LaTeX (inline $...$, display "
+        "$$...$$); tabular or relational data as a Markdown table written directly, "
+        "never wrapped in a code fence."
     )
     msgs = [SystemMessage(content=system)]
     for h in (history or [])[-6:]:  # last few turns for context
