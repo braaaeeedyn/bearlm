@@ -55,19 +55,40 @@ def _doc_key(d: Document):
     return m.get("chunk_id") or (m.get("source"), m.get("section"), (d.page_content or "")[:80])
 
 
-def hybrid_candidates(query: str, collection_name: str, pool: int) -> list[Document]:
-    """Fuse dense + BM25 rankings via RRF; return up to `pool` documents."""
+def _course_filter(allowed_courses):
+    """Chroma `where` clause restricting retrieval to a set of courses (or None)."""
+    if not allowed_courses:
+        return None
+    if len(allowed_courses) == 1:
+        return {"course": allowed_courses[0]}
+    return {"course": {"$in": list(allowed_courses)}}
+
+
+def hybrid_candidates(query: str, collection_name: str, pool: int,
+                      allowed_courses=None) -> list[Document]:
+    """Fuse dense + BM25 rankings via RRF; return up to `pool` documents.
+
+    `allowed_courses` (optional) restricts results to those course labels — used
+    to scope a project's corpus fallback to specific subjects.
+    """
     from . import local_store
 
     vs = local_store.get_vectorstore(collection_name)
-    dense = vs.similarity_search(query, k=pool)
+    where = _course_filter(allowed_courses)
+    dense = vs.similarity_search(query, k=pool, filter=where)
 
     sparse: list[Document] = []
     bm25, docs = _get_bm25(collection_name)
     if bm25 is not None and docs:
+        allow = set(allowed_courses) if allowed_courses else None
         scores = bm25.get_scores(_tokenize(query))
         ranked_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        sparse = [docs[i] for i in ranked_idx[:pool] if scores[i] > 0]
+        for i in ranked_idx:
+            if scores[i] <= 0 or len(sparse) >= pool:
+                break
+            d = docs[i]
+            if allow is None or (d.metadata or {}).get("course") in allow:
+                sparse.append(d)
 
     fused: dict = {}
     seen: dict = {}
@@ -81,13 +102,17 @@ def hybrid_candidates(query: str, collection_name: str, pool: int) -> list[Docum
     return [seen[k] for k, _ in order[:pool]]
 
 
-def candidates(query: str, collection_name: str, pool: int) -> list[Document]:
-    """Candidate pool for retrieval: hybrid when enabled, else dense-only."""
+def candidates(query: str, collection_name: str, pool: int,
+               allowed_courses=None) -> list[Document]:
+    """Candidate pool: hybrid when enabled, else dense-only; optionally scoped to
+    a set of courses (for a project's corpus fallback)."""
     if config.HYBRID_SEARCH_ENABLED:
-        return hybrid_candidates(query, collection_name, pool)
+        return hybrid_candidates(query, collection_name, pool, allowed_courses)
     from . import local_store
 
-    return local_store.get_vectorstore(collection_name).similarity_search(query, k=pool)
+    return local_store.get_vectorstore(collection_name).similarity_search(
+        query, k=pool, filter=_course_filter(allowed_courses)
+    )
 
 
 def invalidate(collection_name: str | None = None) -> None:

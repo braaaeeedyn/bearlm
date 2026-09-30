@@ -189,6 +189,20 @@ def clear_chats(slug: str) -> None:
     _save(meta)
 
 
+def set_corpus_scope(slug: str, courses: list[str] | None) -> dict:
+    """Set which course-corpus subjects this project may fall back to.
+
+    None -> all courses (default); [] -> no corpus fallback (project docs only);
+    [list] -> only those courses. Returns the stored scope.
+    """
+    meta = get_project(slug)
+    if meta is None:
+        raise ValueError(f"No such project: {slug}")
+    meta["corpus_courses"] = None if courses is None else list(courses)
+    _save(meta)
+    return {"corpus_courses": meta["corpus_courses"]}
+
+
 def remove_pdf(slug: str, filename: str) -> dict:
     """Remove one PDF from a project: delete its chunks, file, and metadata entry."""
     meta = get_project(slug)
@@ -238,6 +252,7 @@ def public(meta: dict) -> dict:
         "pdfs": meta.get("pdfs", []),
         "chats": [_chat_summary(c) for c in chats],
         "chunks": local_store.collection_count(project_collection(slug)),
+        "corpus_courses": meta.get("corpus_courses"),  # None = all subjects allowed
     }
 
 

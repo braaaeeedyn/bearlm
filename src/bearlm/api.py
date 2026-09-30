@@ -29,6 +29,16 @@ WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 app = FastAPI(title="BearLM", docs_url="/api/docs")
 
 
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    """Make the browser always revalidate static assets, so edits show up without
+    a hard reload (avoids stale cached JS/CSS)."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.on_event("startup")
 def _prewarm_bm25() -> None:
     """Build the corpus BM25 index in the background so the first hybrid query
@@ -209,6 +219,21 @@ def remove_project_pdf(slug: str, filename: str) -> dict:
     return projects.remove_pdf(slug, filename)
 
 
+class CorpusScopeRequest(BaseModel):
+    courses: list[str] | None = None  # None = all; [] = none; [list] = subset
+
+
+@app.post("/api/projects/{slug}/corpus")
+def set_corpus_scope(slug: str, req: CorpusScopeRequest) -> dict:
+    """Set which course-corpus subjects this project may fall back to."""
+    _require_local()
+    from . import projects
+
+    if projects.get_project(slug) is None:
+        raise HTTPException(status_code=404, detail="No such project.")
+    return projects.set_corpus_scope(slug, req.courses)
+
+
 # --- chats within a project (multi-turn) ------------------------------------
 
 class CreateChatRequest(BaseModel):
@@ -269,6 +294,7 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
     if not question:
         return AskResponse(answer="Please enter a question.", citations=[], source="none")
 
+    project = projects.get_project(slug)
     history = chat.get("messages", [])
     result = rag.answer_grounded(
         question,
@@ -276,6 +302,7 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         primary_label="project",
         history=history,
         rewrite=req.rewrite,
+        corpus_courses=(project or {}).get("corpus_courses"),
     )
     # Persist both turns so the conversation survives reloads.
     projects.append_message(slug, chat_id, "user", question)

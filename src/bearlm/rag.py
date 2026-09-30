@@ -317,7 +317,7 @@ def _is_meta_question(question: str) -> bool:
     return bool(_META_RE.search(question or ""))
 
 
-def _top_docs(question, collection_name, gated=True):
+def _top_docs(question, collection_name, gated=True, allowed_courses=None):
     """Vector-retrieve a pool from one collection and rerank it.
 
     gated=True keeps only chunks clearing config.RERANK_MIN_SCORE (the confidence
@@ -327,7 +327,7 @@ def _top_docs(question, collection_name, gated=True):
     """
     from . import rerank, search
 
-    cands = search.candidates(question, collection_name, config.RERANK_CANDIDATES)
+    cands = search.candidates(question, collection_name, config.RERANK_CANDIDATES, allowed_courses)
     if not cands:
         return []
     scored = rerank.rerank_scored(question, cands)
@@ -405,7 +405,7 @@ def _make_retrieval_query(question, history, rewrite):
 
 
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None, history=None, rewrite=None):
+                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None):
     """Grounded answer with a confidence gate, project-first fallback, and
     optional multi-turn conversation history.
 
@@ -446,9 +446,13 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
                 used = primary_label
 
     # Fall back to the course corpus for uncovered questions — but NOT for a meta
-    # question about "this" doc (that should stay scoped to the primary doc).
-    if not docs and (allow_fallback or not primary_collection) and not (meta and primary_collection):
-        docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True)
+    # question about "this" doc, and NOT if the project disabled corpus fallback
+    # (corpus_courses == [] means "project docs only"). corpus_courses may also
+    # restrict fallback to a subset of subjects.
+    corpus_disabled = corpus_courses is not None and len(corpus_courses) == 0
+    if (not docs and (allow_fallback or not primary_collection)
+            and not (meta and primary_collection) and not corpus_disabled):
+        docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True, allowed_courses=corpus_courses)
         if docs:
             used = "corpus"
 

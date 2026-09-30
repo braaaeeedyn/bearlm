@@ -119,6 +119,55 @@
     $("sideProjectName").textContent = p.name;
     renderDocList(p.pdfs);
     renderChatList(p.chats || []);
+    renderCorpusScope(p);
+  }
+
+  // --- corpus fallback scope (which subjects a project may fall back to) ------
+  let allCorpusCourses = [];
+
+  function renderCorpusScope(project) {
+    const wrap = $("corpusList");
+    if (!wrap) return;
+    const allowed = project.corpus_courses;  // null = all; [] = none; [list] = subset
+    const isAllowed = function (c) { return allowed == null || allowed.indexOf(c) !== -1; };
+    wrap.innerHTML = "";
+    allCorpusCourses.forEach(function (c) {
+      const id = "corpus-" + c;
+      const label = document.createElement("label");
+      label.className = "corpus-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.id = id; cb.value = c; cb.checked = isAllowed(c);
+      cb.addEventListener("change", saveCorpusScope);
+      const span = document.createElement("span");
+      span.textContent = c;
+      label.appendChild(cb); label.appendChild(span);
+      wrap.appendChild(label);
+    });
+    updateCorpusHint(allowed);
+  }
+
+  function updateCorpusHint(allowed) {
+    const hint = $("corpusHint");
+    if (!hint) return;
+    const total = allCorpusCourses.length;
+    if (allowed == null) hint.textContent = "all";
+    else if (allowed.length === 0) hint.textContent = "off";
+    else hint.textContent = allowed.length + "/" + total;
+  }
+
+  async function saveCorpusScope() {
+    if (!currentSlug) return;
+    const checked = Array.prototype.slice.call($("corpusList").querySelectorAll("input:checked"))
+      .map(function (n) { return n.value; });
+    // all checked -> null (all); otherwise the explicit list (possibly empty)
+    const courses = (checked.length === allCorpusCourses.length) ? null : checked;
+    updateCorpusHint(courses);
+    try {
+      await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/corpus", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ courses: courses }),
+      });
+    } catch (e) { alert(e.message); }
   }
 
   let pdfView = "list";
@@ -434,6 +483,10 @@
 
   // --- init ------------------------------------------------------------------
   (async function () {
+    try {
+      const data = await jsonFetch("/api/courses");
+      allCorpusCourses = (data.courses || []).slice();
+    } catch (e) {}
     const projects = await loadProjects();
     promptStaleProjects(projects);
   })();
