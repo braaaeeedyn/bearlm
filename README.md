@@ -177,34 +177,45 @@ For the OpenAI backend, `OPENAI_API_KEY` and `MONGODB_URI` are required.
 
 ## Evaluation
 
-All eval lives in `eval/`. **You must write/verify the question set yourself** —
-`eval/questions.jsonl` ships with 10 auto-drafted templates and a marker; expand
-it to 50–100 verified questions before trusting the numbers.
+All eval lives in `eval/`. The question set is **generated from real corpus
+chunks** — each question is written from a specific chunk, so that chunk's
+`(course, section, chunk_id)` is the exact gold. `recall@k` then measures whether
+retrieval surfaces the true source chunk (a synthetic-but-grounded benchmark:
+LLM-written questions, exact gold labels). `eval/questions.jsonl` is a small
+hand-drafted template you can extend by hand.
 
 ```bash
-# 1. Retrieval quality (recall@1/3/5, MRR) — with and without the reranker
-BACKEND=local uv run python eval/retrieval_eval.py
+# 1. Generate an eval set from the corpus (5 questions/course → eval/questions_generated.jsonl)
+BACKEND=local uv run python eval/generate_questions.py --per-course 5
 
-# 2. End-to-end answers + latency, for manual grading (exports a CSV)
-uv run python eval/answer_eval.py --both       # runs local + openai on same Qs
-#   then open eval/out/answers.csv and fill the `grade` column
-#   (correct | partial | wrong | hallucinated)
+# 2. Retrieval quality (recall@1/3/5, MRR): dense vs hybrid vs hybrid+rerank
+BACKEND=local uv run python eval/retrieval_eval.py --questions eval/questions_generated.jsonl
 
-# 3. Summary table
+# 3. End-to-end answers + latency (CSV for manual grading; --limit N to sample)
+uv run python eval/answer_eval.py --questions eval/questions_generated.jsonl --limit 10
+#   then grade the `grade` column: correct | partial | wrong | hallucinated
+
+# 4. Summary
 uv run python eval/report.py
 ```
 
-`report.py` reads the artifacts above; it never fabricates numbers and shows `-`
-for anything not yet measured. The OpenAI $/query figure is an **estimate** whose
-assumptions you can edit at the top of `report.py`.
+### Retrieval results (n=50, generated set, pool=15)
 
-### Results (fill in after running the eval yourself)
+Each technique measurably helps — hybrid lifts recall, the reranker sharpens the
+top rank:
 
-| Config | recall@5 | MRR | median latency | p95 latency | $/query |
-|---|---|---|---|---|---|
-| local (vector) | _TODO_ | _TODO_ | _TODO_ | _TODO_ | $0.0000 |
-| local (+reranker) | _TODO_ | _TODO_ | _TODO_ | _TODO_ | $0.0000 |
-| openai (baseline) | _TODO_ | _TODO_ | _TODO_ | _TODO_ | ~$0.0006 (est.) |
+| metric | dense | hybrid | hybrid + rerank |
+|---|---|---|---|
+| recall@1 | 0.560 | 0.600 | **0.820** |
+| recall@3 | 0.680 | 0.780 | **0.860** |
+| recall@5 | 0.760 | 0.840 | **0.860** |
+| MRR | 0.644 | 0.700 | **0.840** |
+
+**Answering** (`llama3.1:8b` on an 8 GB RTX 4060, 10-question sample): median
+**6.0 s**, p95 **26 s** (p95 is first-call model warmup; steady-state is ~4–8 s).
+**Cost / query:** local **$0.0000** (self-hosted); OpenAI baseline ~$0.0006
+(estimate — see `report.py`). Answer correctness grading (faithfulness) is left to
+you via the exported `eval/out/answers.csv`.
 
 ---
 
@@ -225,7 +236,7 @@ web/                 # hand-built frontend, light/dark, shared render.js
   index.html         # Ask page (course corpus Q&A)
   projects.html      # Projects: sidebar + multi-turn chat
   analytics.html     # usage analytics (OpenAI backend)
-eval/                # questions.jsonl + retrieval/answer eval + report
+eval/                # generate_questions + retrieval/answer eval + report
 ```
 
 ### Key HTTP endpoints

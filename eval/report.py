@@ -75,42 +75,48 @@ def fmt(x, spec="{:.3f}") -> str:
     return spec.format(x) if isinstance(x, (int, float)) and x == x else "-"
 
 
+RETR_CONFIGS = ("dense", "hybrid", "hybrid+rerank")
+
+
 def main() -> None:
     retr = load_retrieval()
     lat = load_latencies()
 
-    rows = []
-    # Local backend row (recall/mrr from retrieval.json; latency from CSV).
-    def metrics_for(backend: str, retr_key: str | None):
-        r5 = mrr = None
-        if retr and retr_key and retr_key in retr:
-            r5, mrr = retr[retr_key].get("recall@5"), retr[retr_key].get("mrr")
+    print("=" * 76)
+    print("BearLM eval summary")
+    print("=" * 76)
+
+    # --- Retrieval ablation (recall@1/3/5 + MRR) ---
+    print("Retrieval  (local: nomic-embed-text + Chroma)")
+    if retr and all(c in retr for c in RETR_CONFIGS):
+        n = retr.get("n", "?")
+        header = f"  {'metric':12}" + "".join(f"{c:>16}" for c in RETR_CONFIGS)
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for k in (1, 3, 5):
+            m = f"recall@{k}"
+            print(f"  {m:12}" + "".join(f"{fmt(retr[c].get(m)):>16}" for c in RETR_CONFIGS))
+        print(f"  {'mrr':12}" + "".join(f"{fmt(retr[c].get('mrr')):>16}" for c in RETR_CONFIGS))
+        print(f"  (n={n} questions, pool={retr.get('pool')})")
+    else:
+        print("  no retrieval.json — run: BACKEND=local uv run python eval/retrieval_eval.py")
+
+    # --- Latency + cost (from answer_eval CSV) ---
+    print("\nAnswering  (median / p95 latency, cost per query)")
+    hdr = f"  {'backend':20}{'med(s)':>9}{'p95(s)':>9}{'$/query':>12}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    oai = openai_cost_per_query()
+    for backend, cost in (("local", "$0.0000"), ("openai", "$" + format(oai, ".4f"))):
         ls = lat.get(backend, [])
         med = statistics.median(ls) if ls else None
         p95 = _p95(ls) if ls else None
-        return r5, mrr, med, p95
-
-    r5_v, mrr_v, med_l, p95_l = metrics_for("local", "vector")
-    r5_r, mrr_r, _, _ = metrics_for("local", "rerank")
-    _, _, med_o, p95_o = metrics_for("openai", None)
-
-    oai = openai_cost_per_query()
-
-    print("=" * 74)
-    print("BearLM eval summary")
-    print("=" * 74)
-    header = f"{'config':22}{'recall@5':>10}{'MRR':>8}{'med(s)':>9}{'p95(s)':>9}{'$/query':>12}"
-    print(header)
-    print("-" * 74)
-    print(f"{'local (vector)':22}{fmt(r5_v):>10}{fmt(mrr_v):>8}{fmt(med_l,'{:.2f}'):>9}{fmt(p95_l,'{:.2f}'):>9}{'$0.0000':>12}")
-    print(f"{'local (+reranker)':22}{fmt(r5_r):>10}{fmt(mrr_r):>8}{fmt(med_l,'{:.2f}'):>9}{fmt(p95_l,'{:.2f}'):>9}{'$0.0000':>12}")
-    print(f"{'openai (baseline)':22}{'-':>10}{'-':>8}{fmt(med_o,'{:.2f}'):>9}{fmt(p95_o,'{:.2f}'):>9}{'$'+format(oai,'.4f'):>12}")
-    print("-" * 74)
-    print("openai $/query is an ESTIMATE (edit PRICES/ASSUMED in report.py).")
-    if not retr:
-        print("note: eval/out/retrieval.json missing -> run retrieval_eval.py.")
+        note = " (est.)" if backend == "openai" else ""
+        print(f"  {backend:20}{fmt(med,'{:.2f}'):>9}{fmt(p95,'{:.2f}'):>9}{cost:>12}{note}")
     if not lat:
-        print("note: eval/out/answers.csv missing -> run answer_eval.py.")
+        print("  no answers.csv — run: uv run python eval/answer_eval.py")
+    print("-" * 76)
+    print("openai $/query is an ESTIMATE (edit PRICES/ASSUMED in report.py).")
 
 
 if __name__ == "__main__":

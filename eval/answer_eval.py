@@ -39,10 +39,12 @@ FIELDS = [
 ]
 
 
-def run_one_backend(out_path: Path) -> None:
+def run_one_backend(out_path: Path, questions_path: str | None = None, limit: int = 0) -> None:
     from bearlm import config, rag  # imported here so BACKEND is already set
 
-    questions = _common.load_questions()
+    questions = _common.load_questions(questions_path)
+    if limit:
+        questions = questions[:limit]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     new_file = not out_path.exists()
     with out_path.open("a", newline="", encoding="utf-8") as f:
@@ -72,12 +74,12 @@ def run_one_backend(out_path: Path) -> None:
     print(f"Appended {config.BACKEND} rows to {out_path}")
 
 
-def run_both(out_path: Path) -> None:
+def run_both(out_path: Path, extra: list[str]) -> None:
     for backend in ("local", "openai"):
         print(f"\n=== spawning backend={backend} ===")
         env = {**os.environ, "BACKEND": backend}
         subprocess.run(
-            [sys.executable, __file__, "--out", str(out_path)],
+            [sys.executable, __file__, "--out", str(out_path), *extra],
             env=env, check=True,
         )
 
@@ -86,12 +88,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(_common.EVAL_DIR / "out" / "answers.csv"))
     ap.add_argument("--both", action="store_true", help="run local and openai backends")
+    default_q = _common.EVAL_DIR / "questions_generated.jsonl"
+    ap.add_argument("--questions", default=str(default_q if default_q.exists()
+                                               else _common.EVAL_DIR / "questions.jsonl"))
+    ap.add_argument("--limit", type=int, default=0, help="only the first N questions")
     args = ap.parse_args()
     out_path = Path(args.out)
     if args.both:
-        run_both(out_path)
+        extra = ["--questions", args.questions] + (["--limit", str(args.limit)] if args.limit else [])
+        run_both(out_path, extra)
     else:
-        run_one_backend(out_path)
+        run_one_backend(out_path, args.questions, args.limit)
 
 
 if __name__ == "__main__":
