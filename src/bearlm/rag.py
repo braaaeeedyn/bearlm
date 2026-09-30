@@ -208,15 +208,16 @@ def _get_llm():
 
 
 def _retrieve_local(question, k=None):
-    """Retrieve (and optionally rerank) Chroma documents for a question."""
-    from . import local_store
+    """Retrieve (hybrid BM25+dense when enabled, optionally reranked) for a question."""
+    from . import search
 
+    k = k or config.RETRIEVAL_K
     if config.RERANK_ENABLED:
         from . import rerank
 
-        candidates = local_store.get_retriever(config.RERANK_CANDIDATES).invoke(question)
-        return rerank.rerank(question, candidates, config.RERANK_TOP_N)
-    return local_store.get_retriever(k or config.RETRIEVAL_K).invoke(question)
+        cands = search.candidates(question, config.CHROMA_COLLECTION, config.RERANK_CANDIDATES)
+        return rerank.rerank(question, cands, config.RERANK_TOP_N)
+    return search.candidates(question, config.CHROMA_COLLECTION, k)
 
 
 def build_chain(k=None):
@@ -242,11 +243,14 @@ def build_chain(k=None):
     )
 
 
-def _answer_local(question, k=None):  # (str, int|None) -> Answer
+def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None) -> Answer
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
-    docs = _retrieve_local(question, k)
+    if rewrite is None:
+        rewrite = config.QUERY_REWRITE_ENABLED
+    rq = rewrite_query(question) if rewrite else question
+    docs = _retrieve_local(rq, k)
     if not docs:
         return Answer("I don't know based on the course materials.", [])
 
@@ -319,13 +323,12 @@ def _top_docs(question, collection_name, gated=True):
     gated=False skips the threshold and just returns the reranked top chunks (for
     meta/summary questions, where topical scores are uninformative).
     """
-    from . import local_store, rerank
+    from . import rerank, search
 
-    vs = local_store.get_vectorstore(collection_name)
-    candidates = vs.similarity_search(question, k=config.RERANK_CANDIDATES)
-    if not candidates:
+    cands = search.candidates(question, collection_name, config.RERANK_CANDIDATES)
+    if not cands:
         return []
-    scored = rerank.rerank_scored(question, candidates)
+    scored = rerank.rerank_scored(question, cands)
     if gated:
         scored = [(d, s) for d, s in scored if s >= config.RERANK_MIN_SCORE]
     return [d for d, _ in scored[: config.RERANK_TOP_N]]
@@ -342,8 +345,65 @@ def _retrieval_query(question, history):
     return f"{prev} {question}".strip() if prev else question
 
 
+def rewrite_query(question, history=None):
+    """LLM-rewrite a (possibly conversational) question into a standalone, keyword-
+    rich retrieval query. Resolves pronouns from history. Falls back to the raw
+    question on any error. Used when query rewriting is enabled."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.output_parsers import StrOutputParser
+
+    convo = ""
+    if history:
+        turns = [f"{h.get('role')}: {h.get('content', '')}" for h in history[-4:]]
+        convo = "Conversation so far:\n" + "\n".join(turns) + "\n\n"
+    system = (
+        "You rewrite a user's question into a single concise, keyword-rich search "
+        "query for retrieving relevant document passages. Resolve pronouns and "
+        "references using the conversation. Output ONLY the query text — no quotes, "
+        "no preamble, one line."
+    )
+    try:
+        out = (_get_llm() | StrOutputParser()).invoke(
+            [SystemMessage(content=system),
+             HumanMessage(content=f"{convo}Question: {question}\n\nSearch query:")]
+        )
+        line = out.strip().strip('"').splitlines()[0].strip() if out else ""
+        return line or question
+    except Exception:
+        return question
+
+
+def optimize_prompt(prompt):
+    """Return an improved, prompt-engineered version of the user's prompt (for the
+    suggest-then-confirm UI). Does not answer the question or invent facts."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.output_parsers import StrOutputParser
+
+    system = (
+        "You are a prompt engineer for a grounded document Q&A assistant. Rewrite "
+        "the user's prompt to be clearer and more effective: make the ask specific "
+        "and unambiguous, state the desired form and level of detail, and stay "
+        "faithful to the original intent. Do NOT answer the question, add facts, or "
+        "include commentary. Output ONLY the improved prompt."
+    )
+    try:
+        out = (_get_llm() | StrOutputParser()).invoke(
+            [SystemMessage(content=system), HumanMessage(content=prompt)]
+        )
+        return (out or "").strip() or prompt
+    except Exception:
+        return prompt
+
+
+def _make_retrieval_query(question, history, rewrite):
+    """Pick the retrieval query: LLM rewrite if enabled, else prev-turn prepend."""
+    if rewrite is None:
+        rewrite = config.QUERY_REWRITE_ENABLED
+    return rewrite_query(question, history) if rewrite else _retrieval_query(question, history)
+
+
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None, history=None):
+                    allow_fallback=None, history=None, rewrite=None):
     """Grounded answer with a confidence gate, project-first fallback, and
     optional multi-turn conversation history.
 
@@ -361,7 +421,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
 
     from . import local_store
 
-    rq = _retrieval_query(question, history)
+    rq = _make_retrieval_query(question, history, rewrite)
     docs, used = [], "none"
     meta = _is_meta_question(question)
 
@@ -404,10 +464,10 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     return Answer(text, _dedupe_citations(docs), source=used)
 
 
-def answer(question, k=None):  # (str, int|None) -> Answer
+def answer(question, k=None, rewrite=None):  # (str, int|None, bool|None) -> Answer
     """Backend-dispatching entry point the UI/eval call."""
     if config.BACKEND == "local":
-        return _answer_local(question, k)
+        return _answer_local(question, k, rewrite)
     return _answer_openai(question, k)
 
 

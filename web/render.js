@@ -150,11 +150,51 @@
     return tag;
   }
 
+  // Prompt optimizer: call the API and render a suggest-then-confirm panel.
+  async function optimizePrompt(text) {
+    const resp = await fetch("/api/optimize", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: text }),
+    });
+    if (!resp.ok) throw new Error("Couldn't optimize (" + resp.status + ")");
+    return (await resp.json()).optimized || "";
+  }
+
+  function showSuggestion(panel, optimized, onUse) {
+    panel.hidden = false;
+    panel.innerHTML = "";
+    const label = document.createElement("div");
+    label.className = "suggest-label"; label.textContent = "Suggested prompt";
+    const body = document.createElement("div");
+    body.className = "suggest-text"; body.textContent = optimized;
+    const actions = document.createElement("div");
+    actions.className = "suggest-actions";
+    const use = document.createElement("button");
+    use.type = "button"; use.className = "tool-btn primary"; use.textContent = "Use this";
+    use.addEventListener("click", function () { onUse(optimized); panel.hidden = true; });
+    const keep = document.createElement("button");
+    keep.type = "button"; keep.className = "tool-btn"; keep.textContent = "Keep mine";
+    keep.addEventListener("click", function () { panel.hidden = true; });
+    actions.appendChild(use); actions.appendChild(keep);
+    panel.appendChild(label); panel.appendChild(body); panel.appendChild(actions);
+  }
+
+  function suggestMessage(panel, message) {
+    panel.hidden = false;
+    panel.innerHTML = "";
+    const m = document.createElement("div");
+    m.className = "suggest-text"; m.textContent = message;
+    panel.appendChild(m);
+  }
+
   window.BearLM = {
     renderMarkdown: renderMarkdown,
     renderMath: renderMath,
     renderResult: renderResult,
     citationTag: citationTag,
     sourceBadge: SOURCE_BADGE,
+    optimizePrompt: optimizePrompt,
+    showSuggestion: showSuggestion,
+    suggestMessage: suggestMessage,
   };
 })();

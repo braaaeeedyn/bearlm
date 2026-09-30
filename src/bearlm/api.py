@@ -29,8 +29,33 @@ WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 app = FastAPI(title="BearLM", docs_url="/api/docs")
 
 
+@app.on_event("startup")
+def _prewarm_bm25() -> None:
+    """Build the corpus BM25 index in the background so the first hybrid query
+    isn't slow (the index over ~10k chunks takes a while to build once)."""
+    if config.BACKEND != "local" or not config.HYBRID_SEARCH_ENABLED:
+        return
+    import threading
+
+    from . import search
+
+    threading.Thread(
+        target=lambda: search._get_bm25(config.CHROMA_COLLECTION),
+        daemon=True,
+    ).start()
+
+
 class AskRequest(BaseModel):
     question: str
+    rewrite: bool | None = None  # None = use config default; True/False overrides per request
+
+
+class OptimizeRequest(BaseModel):
+    prompt: str
+
+
+class OptimizeResponse(BaseModel):
+    optimized: str
 
 
 class Citation(BaseModel):
@@ -86,13 +111,23 @@ def ask(req: AskRequest) -> AskResponse:
     question = req.question.strip()
     if not question:
         return AskResponse(answer="Please enter a question.", citations=[])
-    result = rag.answer(question)
+    result = rag.answer(question, rewrite=req.rewrite)
     _log_query(question, result.citations)
     return AskResponse(
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
         source=result.source,
     )
+
+
+@app.post("/api/optimize", response_model=OptimizeResponse)
+def optimize(req: OptimizeRequest) -> OptimizeResponse:
+    """Suggest a prompt-engineered rewrite of the user's prompt (local LLM)."""
+    _require_local()
+    prompt = req.prompt.strip()
+    if not prompt:
+        return OptimizeResponse(optimized="")
+    return OptimizeResponse(optimized=rag.optimize_prompt(prompt))
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +265,7 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         primary_collection=projects.project_collection(slug),
         primary_label="project",
         history=history,
+        rewrite=req.rewrite,
     )
     # Persist both turns so the conversation survives reloads.
     projects.append_message(slug, chat_id, "user", question)
@@ -269,6 +305,7 @@ def ask_upload(uid: str, req: AskRequest) -> AskResponse:
         primary_collection=projects.upload_collection(uid),
         primary_label="upload",
         allow_fallback=False,
+        rewrite=req.rewrite,
     )
     return AskResponse(
         answer=result.text,

@@ -20,6 +20,7 @@ dependencies = [
     "pymupdf>=1.28.2",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
+    "rank-bm25>=0.2.2",
     "sentence-transformers>=6.1.0",
     "tiktoken>=0.14.0",
     "uvicorn[standard]>=0.52.4",

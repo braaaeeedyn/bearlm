@@ -355,8 +355,9 @@
     const thinking = appendMessage({ role: "assistant", content: "_…thinking…_", source: null });
     thinking.classList.add("msg-thinking");
     try {
+      const rewrite = !!($("chatRewriteToggle") && $("chatRewriteToggle").checked);
       const data = await jsonFetch("/api/projects/" + encodeURIComponent(currentSlug) + "/chats/" + currentChatId + "/ask", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: question }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: question, rewrite: rewrite }),
       });
       thinking.remove();
       appendMessage({ role: "assistant", content: data.answer, citations: data.citations, source: data.source });
@@ -394,6 +395,27 @@
   $("resetCtxBtn").addEventListener("click", resetContext);
   $("newChatBtn").addEventListener("click", newChat);
   $("chatForm").addEventListener("submit", function (e) { e.preventDefault(); sendMessage($("chatQ").value); });
+
+  // Prompt optimizer for the chat input
+  const chatImprove = $("chatImproveBtn"), chatSuggest = $("chatSuggestPanel"), chatInput = $("chatQ");
+  if (chatImprove && chatSuggest) {
+    chatImprove.addEventListener("click", async function () {
+      const text = chatInput.value.trim();
+      if (!text) { chatInput.focus(); return; }
+      chatImprove.disabled = true;
+      const label = chatImprove.textContent; chatImprove.textContent = "✨ Improving…";
+      window.BearLM.suggestMessage(chatSuggest, "Optimizing your prompt…");
+      try {
+        const optimized = await window.BearLM.optimizePrompt(text);
+        if (!optimized) chatSuggest.hidden = true;
+        else window.BearLM.showSuggestion(chatSuggest, optimized, function (t) { chatInput.value = t; chatInput.focus(); });
+      } catch (e) {
+        window.BearLM.suggestMessage(chatSuggest, e.message);
+      } finally {
+        chatImprove.disabled = false; chatImprove.textContent = label;
+      }
+    });
+  }
 
   // --- init ------------------------------------------------------------------
   (async function () {

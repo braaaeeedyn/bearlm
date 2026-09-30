@@ -52,10 +52,11 @@
     showLoading();
 
     try {
+      const rewrite = !!(rewriteToggle && rewriteToggle.checked);
       const resp = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question }),
+        body: JSON.stringify({ question: question, rewrite: rewrite }),
       });
       if (!resp.ok) throw new Error("Request failed (" + resp.status + ")");
       const data = await resp.json();
@@ -72,6 +73,31 @@
     e.preventDefault();
     ask(input.value);
   });
+
+  // --- Prompt optimizer (suggest-then-confirm) + query-rewrite toggle --------
+  const improveBtn = document.getElementById("improveBtn");
+  const rewriteToggle = document.getElementById("rewriteToggle");
+  const suggestPanel = document.getElementById("suggestPanel");
+  if (improveBtn && suggestPanel) {
+    improveBtn.addEventListener("click", async function () {
+      const text = input.value.trim();
+      if (!text) { input.focus(); return; }
+      improveBtn.disabled = true;
+      const label = improveBtn.textContent;
+      improveBtn.textContent = "✨ Improving…";
+      window.BearLM.suggestMessage(suggestPanel, "Optimizing your prompt…");
+      try {
+        const optimized = await window.BearLM.optimizePrompt(text);
+        if (!optimized) { suggestPanel.hidden = true; }
+        else window.BearLM.showSuggestion(suggestPanel, optimized, function (t) { input.value = t; input.focus(); });
+      } catch (e) {
+        window.BearLM.suggestMessage(suggestPanel, e.message);
+      } finally {
+        improveBtn.disabled = false;
+        improveBtn.textContent = label;
+      }
+    });
+  }
 
   if (suggestions) {
     suggestions.querySelectorAll(".chip").forEach(function (chip) {

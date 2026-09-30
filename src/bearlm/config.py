@@ -131,3 +131,14 @@ PROJECT_FALLBACK_TO_CORPUS = os.environ.get("PROJECT_FALLBACK_TO_CORPUS", "true"
 # eval/ — start conservative and adjust.
 MIN_RELEVANCE = float(os.environ.get("MIN_RELEVANCE", "0.30"))
 GROUNDED_REFUSAL = "I don't know based on the provided materials."
+
+# --- Hybrid search (BM25 keyword + dense vector, fused with RRF) --------------
+# Dense vectors catch paraphrases; BM25 catches exact terms/identifiers. Fusing
+# both (reciprocal rank fusion) gives a better candidate pool than either alone.
+HYBRID_SEARCH_ENABLED = os.environ.get("HYBRID_SEARCH_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+RRF_K = int(os.environ.get("RRF_K", "60"))  # reciprocal-rank-fusion constant
+
+# --- Query rewriting (LLM turns a question into a better retrieval query) -----
+# Off by default: it adds one LLM call (~seconds locally) per query. Enable per
+# request from the UI, or globally here.
+QUERY_REWRITE_ENABLED = os.environ.get("QUERY_REWRITE_ENABLED", "false").strip().lower() in ("1", "true", "yes")

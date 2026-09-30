@@ -106,11 +106,16 @@
     <section class="chat-view hidden" id="chatView">
       <div class="chat-scroll" id="chatScroll"></div>
       <form class="chat-input" id="chatForm" autocomplete="off">
+        <div class="suggest" id="chatSuggestPanel" hidden></div>
         <div class="ask-field">
           <input id="chatQ" type="text" placeholder="Message this project…" aria-label="Message this project" />
           <button class="submit" type="submit" aria-label="Send">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
           </button>
+        </div>
+        <div class="ask-tools">
+          <button type="button" class="tool-btn" id="chatImproveBtn" title="Suggest a clearer prompt">✨ Improve prompt</button>
+          <label class="tool-check" title="Rewrite your message into a better retrieval query"><input type="checkbox" id="chatRewriteToggle" /> Rewrite query for search</label>
         </div>
       </form>
     </section>
