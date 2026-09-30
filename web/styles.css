@@ -725,3 +725,18 @@ body.proj-body { height: 100vh; margin: 0; display: flex; overflow: hidden; }
 .suggest-actions { display: flex; gap: 8px; margin-top: 10px; }
 /* In the project chat, the suggest panel sits above the input */
 .chat-input .suggest { max-width: 760px; margin: 0 auto 10px; }
+
+/* Analytics: "needs the most help" focus panel + practice questions */
+.focus-panel { border-color: var(--accent); }
+.focus-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.focus-course { font-family: var(--font-display); font-size: 30px; font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: 0.02em; }
+.focus-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.focus-btn { white-space: nowrap; }
+.practice { margin-top: 6px; }
+.practice-head { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 18px 0 10px; }
+.practice-list { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 14px; }
+.practice-list li { padding-left: 4px; }
+.practice-q { font-size: 15px; line-height: 1.5; color: var(--body); }
+.practice-a { margin-top: 6px; font-size: 14px; }
+.practice-a summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+.practice-a > div { margin-top: 6px; color: var(--subtle); line-height: 1.5; }

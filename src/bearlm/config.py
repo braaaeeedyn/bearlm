@@ -142,3 +142,8 @@ RRF_K = int(os.environ.get("RRF_K", "60"))  # reciprocal-rank-fusion constant
 # Off by default: it adds one LLM call (~seconds locally) per query. Enable per
 # request from the UI, or globally here.
 QUERY_REWRITE_ENABLED = os.environ.get("QUERY_REWRITE_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
+# --- Analytics (local backend) -----------------------------------------------
+# Query logs go to a local SQLite file (no Atlas). Powers the Analytics page,
+# the "most-asked area" insight, and auto-generated practice questions.
+ANALYTICS_DB = Path(os.environ.get("ANALYTICS_DB", str(Path(__file__).resolve().parents[2] / "data" / "analytics.db")))

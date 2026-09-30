@@ -102,6 +102,50 @@
     el.innerHTML = svg;
   }
 
+  // --- Most-asked area ("needs the most help") + practice questions ----------
+  function renderFocus(stats) {
+    const panel = document.getElementById("focusPanel");
+    const area = stats.top_area;
+    if (!area || !area.course) { panel.hidden = true; return; }
+    panel.hidden = false;
+    document.getElementById("focusCourse").textContent = area.course;
+    let sub = area.count + " question" + (area.count === 1 ? "" : "s") +
+      " · " + area.share + "% of answered questions";
+    if (area.top_units && area.top_units.length) {
+      sub += " · hot spots: " + area.top_units.map(function (u) { return u.section; }).join(", ");
+    }
+    document.getElementById("focusSub").textContent = sub;
+  }
+
+  async function generatePractice() {
+    const btn = document.getElementById("practiceBtn");
+    const out = document.getElementById("practice");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Generating…";
+    out.innerHTML = '<p class="empty-note">Writing practice questions from the most-asked area… (a few seconds)</p>';
+    try {
+      const res = await (await fetch("/api/practice", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ n: 5 }),
+      })).json();
+      if (!res.questions || !res.questions.length) {
+        out.innerHTML = emptyNote(res.message || "No questions could be generated yet.");
+      } else {
+        out.innerHTML =
+          '<div class="practice-head">Practice — ' + esc(res.area) + '</div><ol class="practice-list">' +
+          res.questions.map(function (qa) {
+            return '<li><div class="practice-q">' + esc(qa.question) + '</div>' +
+              '<details class="practice-a"><summary>Show answer</summary><div>' + esc(qa.answer) + '</div></details></li>';
+          }).join("") + "</ol>";
+      }
+    } catch (e) {
+      out.innerHTML = emptyNote("Couldn't generate practice questions.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
   function renderUnanswered(list) {
     const el = document.getElementById("unanswered");
     if (!list.length) {
@@ -119,9 +163,12 @@
     try {
       const stats = await (await fetch("/api/stats")).json();
       renderTiles(stats);
+      renderFocus(stats);
       renderCourseChart(stats.by_course || []);
       renderDayChart(stats.per_day || []);
       renderUnanswered(stats.recent_unanswered || []);
+      const pb = document.getElementById("practiceBtn");
+      if (pb) pb.addEventListener("click", generatePractice);
     } catch (e) {
       document.getElementById("tiles").innerHTML = emptyNote(
         "Couldn't load analytics. Is the server running?"

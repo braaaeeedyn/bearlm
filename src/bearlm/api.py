@@ -91,9 +91,17 @@ async def _read_pdf(file: UploadFile) -> bytes:
     return data
 
 
-def _log_query(question: str, citations: list[dict]) -> None:
-    """Best-effort log of one question; never let logging break a response."""
+def _log_query(question: str, citations: list[dict], source: str = "corpus") -> None:
+    """Best-effort log of one question; never let logging break a response.
+
+    Local backend logs to SQLite (analytics.py); OpenAI backend to Atlas.
+    """
     try:
+        if config.BACKEND == "local":
+            from . import analytics
+
+            analytics.log_query(question, source, citations)
+            return
         coll = db.get_query_logs_collection()
         coll.insert_one(
             {
@@ -112,7 +120,7 @@ def ask(req: AskRequest) -> AskResponse:
     if not question:
         return AskResponse(answer="Please enter a question.", citations=[])
     result = rag.answer(question, rewrite=req.rewrite)
-    _log_query(question, result.citations)
+    _log_query(question, result.citations, source=result.source)
     return AskResponse(
         answer=result.text,
         citations=[Citation(**c) for c in result.citations],
@@ -336,9 +344,29 @@ def courses() -> dict:
         return {"courses": []}
 
 
+class PracticeRequest(BaseModel):
+    course: str | None = None
+    n: int = 5
+
+
+@app.post("/api/practice")
+def practice(req: PracticeRequest) -> dict:
+    """Generate grounded practice questions for the most-asked area (or a given course)."""
+    _require_local()
+    from . import analytics
+
+    n = max(1, min(req.n, 10))
+    return analytics.generate_practice(course=req.course, n=n)
+
+
 @app.get("/api/stats")
 def stats() -> dict:
-    """Aggregate query_logs for the analytics view."""
+    """Aggregate query logs for the analytics view (SQLite locally, else Atlas)."""
+    if config.BACKEND == "local":
+        from . import analytics
+
+        return analytics.stats()
+
     logs = db.get_query_logs_collection()
     total = logs.count_documents({})
     uncited = logs.count_documents({"courses": {"$size": 0}})

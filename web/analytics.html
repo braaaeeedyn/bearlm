@@ -29,6 +29,7 @@
         <a class="wordmark" href="/">BearLM</a>
         <nav class="nav">
           <a href="/" class="nav-link">Ask</a>
+          <a href="/projects" class="nav-link">Projects</a>
           <a href="/analytics" class="nav-link is-active">Analytics</a>
         </nav>
       </div>
@@ -53,6 +54,18 @@
 
     <section id="tiles" class="tiles"></section>
 
+    <section class="panel focus-panel" id="focusPanel" hidden>
+      <div class="card-label">Needs the most help</div>
+      <div class="focus-inner">
+        <div class="focus-text">
+          <div class="focus-course" id="focusCourse">—</div>
+          <div class="focus-sub" id="focusSub"></div>
+        </div>
+        <button class="btn-solid focus-btn" id="practiceBtn" type="button">Generate practice questions</button>
+      </div>
+      <div class="practice" id="practice"></div>
+    </section>
+
     <section class="panel">
       <div class="card-label">Most-cited courses</div>
       <div id="courseChart" class="chart"></div>
@@ -70,7 +83,7 @@
   </main>
 
   <footer class="footer wrap">
-    <span class="mono">Corpus</span> <span id="corpusList">cs61a · cs61b · cs70 · cs188 · data8 · data100</span>
+    <span class="mono">Corpus</span> <span id="corpusList">cs61a · cs61b · cs70 · cs188 · cs189 · data8 · data100 · data101 · data144 · genML</span>
   </footer>
 
   <script src="/static/analytics.js" defer></script>

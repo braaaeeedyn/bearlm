@@ -11,3 +11,6 @@ db/
 data/projects/
 data/uploads/
 eval/out/
+
+# Local analytics store
+data/*.db
