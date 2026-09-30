@@ -214,8 +214,26 @@ top rank:
 **Answering** (`llama3.1:8b` on an 8 GB RTX 4060, 10-question sample): median
 **6.0 s**, p95 **26 s** (p95 is first-call model warmup; steady-state is ~4–8 s).
 **Cost / query:** local **$0.0000** (self-hosted); OpenAI baseline ~$0.0006
-(estimate — see `report.py`). Answer correctness grading (faithfulness) is left to
-you via the exported `eval/out/answers.csv`.
+(estimate — see `report.py`).
+
+### Automated answer grading with RAGAS
+
+`eval/ragas_eval.py` scores answer quality automatically with
+[RAGAS](https://docs.ragas.io) — using the **local Ollama model as the judge**
+(no OpenAI). Two reference-free metrics (no human-written gold answer needed):
+
+- **faithfulness** (0–1): is every claim in the answer supported by the retrieved
+  context? Low = hallucination. This automates the manual "hallucinated" grade.
+- **answer_relevancy** (0–1): does the answer actually address the question?
+
+```bash
+BACKEND=local uv run python eval/ragas_eval.py --limit 8   # slow: several judge calls/sample
+```
+
+> Memory note: RAGAS + `llama3.1:8b` + the retrieval stack is heavy on an 8 GB
+> machine — run with other apps closed, or disable hybrid/reranker
+> (`HYBRID_SEARCH_ENABLED=false RERANK_ENABLED=false`) to lighten the answer step.
+> Scores land in `eval/out/ragas.json`.
 
 ---
 
