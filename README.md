@@ -230,19 +230,18 @@ top rank:
 BACKEND=local uv run python eval/ragas_eval.py --limit 8   # slow: several judge calls/sample
 ```
 
-**Results** (n=6, local `llama3.1:8b` judge; answers from **dense-only** retrieval
-with hybrid+reranker off to fit 8 GB):
+**Results** (n=6, local `llama3.1:8b` judge) — retrieval quality drives grounding:
 
-| metric | score |
-|---|---|
-| answer_relevancy | **0.80** |
-| faithfulness | **0.55** |
+| metric | dense-only | hybrid + reranker |
+|---|---|---|
+| answer_relevancy | 0.80 | **0.97** |
+| faithfulness | 0.55 | **0.83** |
 
-Answers are relevant to the question (0.80). Faithfulness (0.55) is a
-*conservative floor*: this run used the weakest retrieval config (dense-only,
-recall@1 0.56), so weaker context lowers grounding; a small local judge and n=6
-also add variance. Re-running with hybrid+reranker on (better contexts) is
-expected to raise it — the tradeoff is memory.
+Turning on hybrid + reranking (recall@1 0.56 → 0.82) lifts faithfulness 0.55 →
+0.83 and relevancy 0.80 → 0.97 on the same questions: better context in → better-
+grounded answers out. (The hybrid run scored 5/6 — on one sample the small local
+judge couldn't emit parseable output, so RAGAS dropped it; a stronger judge would
+score all 6.)
 
 > Memory note: RAGAS + `llama3.1:8b` + the retrieval stack is heavy on an 8 GB
 > machine — run with other apps closed, or disable hybrid/reranker
