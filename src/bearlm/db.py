@@ -1,65 +1,22 @@
-"""MongoDB Atlas connection helpers.
+"""MongoDB Atlas connection helpers (openai backend)."""
 
-One place that knows how to hand you a `chunks` collection. Everything else
-(ingestion, retrieval) calls these instead of building a client itself.
-
---------------------------------------------------------------------------
-SUGGESTIONS — signatures + recipes are given; you fill in the bodies.
---------------------------------------------------------------------------
-"""
-
-# TODO(you): imports
-#   - `from pymongo import MongoClient`
-#   - `from . import config`   (relative import — pulls MONGODB_URI, DB_NAME, etc.)
 from pymongo import MongoClient
+
 from . import config
 
-def get_client():  # -> MongoClient
-    """Return a MongoClient connected to the Atlas cluster.
 
-    Recipe:
-      1. return MongoClient(config.MONGODB_URI)
-      2. (optional, nice) pass `serverSelectionTimeoutMS=5000` so a bad URI
-         fails in ~5s instead of hanging.
-    """
-    return MongoClient(config.MONGODB_URI)
-    
+def get_client() -> MongoClient:
+    return MongoClient(config.MONGODB_URI, serverSelectionTimeoutMS=5000)
 
 
-def get_chunks_collection():  # -> Collection
-    """Return the `bearlm.chunks` collection, creating nothing (Mongo is lazy).
+def get_chunks_collection():
+    return get_client()[config.DB_NAME][config.CHUNKS_COLL]
 
-    Recipe:
-      1. client = get_client()
-      2. return client[config.DB_NAME][config.CHUNKS_COLL]
-    """
-    client = get_client()
-    return client[config.DB_NAME][config.CHUNKS_COLL]
+
+def get_query_logs_collection():
+    return get_client()[config.DB_NAME][config.QUERY_LOGS_COLL]
 
 
 def ping() -> bool:
-    """Sanity check: can we actually reach the cluster?
-
-    Recipe:
-      1. get_client().admin.command("ping")
-      2. return True  (let an exception propagate if it fails, or catch + return False)
-
-    Handy to call once from a `__main__` block before you run the full ingest.
-    """
     get_client().admin.command("ping")
     return True
-
-
-def get_query_logs_collection():  # -> Collection
-    """Return the `bearlm.query_logs` collection (Stage 6 writes here, Stage 7 reads).
-
-    Mirror get_chunks_collection(), but use config.QUERY_LOGS_COLL instead of
-    CHUNKS_COLL. Mongo creates the collection lazily on the first insert, so
-    there's nothing to set up ahead of time.
-
-    Recipe:
-      1. client = get_client()
-      2. return client[config.DB_NAME][config.QUERY_LOGS_COLL]
-    """
-    client = get_client()
-    return client[config.DB_NAME][config.QUERY_LOGS_COLL]
