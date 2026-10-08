@@ -166,7 +166,7 @@ All settings have env overrides (see `.env.example`); defaults live in
 | `OLLAMA_NUM_CTX` | `8192` | Generator context window. |
 | `CHROMA_DIR` | `./db` | On-disk Chroma store. |
 | `RETRIEVAL_K` | `4` | Chunks fed to the LLM. |
-| `RERANK_ENABLED` | `false` | Rerank corpus retrieval (retrieve 15 → keep 4). |
+| `RERANK_ENABLED` | `true` | Rerank corpus retrieval (retrieve 15 → keep 4). |
 | `RERANK_MIN_SCORE` | `0.02` | Confidence gate for project/upload answers. |
 | `PROJECT_FALLBACK_TO_CORPUS` | `true` | Let project answers fall back to the corpus. |
 | `MIN_RELEVANCE` | `0.30` | Vector-relevance floor (reserved). |
@@ -188,16 +188,23 @@ hand-drafted template you can extend by hand.
 # 1. Generate an eval set from the corpus (5 questions/course → eval/questions_generated.jsonl)
 BACKEND=local uv run python eval/generate_questions.py --per-course 5
 
-# 2. Retrieval quality (recall@1/3/5, MRR): dense vs hybrid vs hybrid+rerank
+# 2. Retrieval quality (recall@k, precision@k, MRR): dense vs hybrid vs hybrid+rerank
 BACKEND=local uv run python eval/retrieval_eval.py --questions eval/questions_generated.jsonl
 
-# 3. End-to-end answers + latency (CSV for manual grading; --limit N to sample)
-uv run python eval/answer_eval.py --questions eval/questions_generated.jsonl --limit 10
-#   then grade the `grade` column: correct | partial | wrong | hallucinated
+# 3. End-to-end answers: refusal, citation correctness, faithfulness/completeness
+#    (local LLM judge; --no-judge to skip), tokens, latency (--limit N to sample)
+BACKEND=local uv run python eval/answer_eval.py --questions eval/questions_generated.jsonl --limit 10
 
-# 4. Summary
+# 4. Summary (--out-dir DIR to read artifacts elsewhere)
 uv run python eval/report.py
 ```
+
+Retrieval and answers are scored separately. `recall@k` is id-level (gold chunk
+in the top k); `precision@k` is page-level (a top-k chunk counts if it shares the
+gold course+section). Answer metrics are computed on the exact chunks the answer
+was built from; faithfulness/completeness are noisy `llama3.1:8b` judge estimates.
+OpenAI `$/query` = list prices x measured token counts (still an estimate).
+Tests: `uv run --with pytest python -m pytest -q tests`.
 
 ### Retrieval results (n=50, generated set, pool=15)
 

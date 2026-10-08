@@ -1,4 +1,4 @@
-"""Retrieval quality: recall@1/3/5 and MRR across an ablation of techniques.
+"""Retrieval quality: recall@1/3/5, precision@1/3/5 and MRR across an ablation of techniques.
 
 Runs against the LOCAL backend (Ollama embeddings + Chroma). For each question it
 scores three retrieval configurations on the same candidate pool:
@@ -7,6 +7,9 @@ scores three retrieval configurations on the same candidate pool:
   - "hybrid+rerank"  : the hybrid pool reordered by the bge cross-encoder
 A gold hit is decided by eval/_common.is_gold_hit — id-level when gold_chunk_ids
 is set (as in the generated eval set), else by course+section.
+recall@k is id-level (fraction of gold chunk ids in the top k, _common.recall_at_k).
+precision@k is page-level: a top-k chunk counts as relevant if it is a gold hit or
+shares the gold (course, section) (_common.precision_at_k).
 
 Run:
     BACKEND=local uv run python eval/retrieval_eval.py --questions eval/questions_generated.jsonl
@@ -37,9 +40,13 @@ def _first_hit_rank(ordered_docs, q) -> int | None:
     return None
 
 
-def _summarize(ranks: list[int | None]) -> dict:
-    n = len(ranks)
-    out = {f"recall@{k}": sum(1 for r in ranks if r and r <= k) / n for k in KS}
+def _summarize(runs: list[tuple[list, dict]]) -> dict:
+    """runs: (ordered docs, question) per question."""
+    n = len(runs)
+    out = {f"recall@{k}": sum(_common.recall_at_k(d, q, k) for d, q in runs) / n for k in KS}
+    out.update({f"precision@{k}": sum(_common.precision_at_k(d, q, k) for d, q in runs) / n
+                for k in KS})
+    ranks = [_first_hit_rank(d, q) for d, q in runs]
     out["mrr"] = sum((1.0 / r) if r else 0.0 for r in ranks) / n
     out["n"] = n
     return out
@@ -66,15 +73,15 @@ def main() -> None:
     if not questions:
         sys.exit(f"No questions in {args.questions}.")
 
-    ranks = {c: [] for c in CONFIGS}
+    runs = {c: [] for c in CONFIGS}
     for q in questions:
         query = q["question"]
         dense = vs.similarity_search(query, k=args.pool)
         hybrid = search.hybrid_candidates(query, config.CHROMA_COLLECTION, args.pool)
         reranked = rerank.rerank(query, hybrid, top_n=len(hybrid))
-        ranks["dense"].append(_first_hit_rank(dense, q))
-        ranks["hybrid"].append(_first_hit_rank(hybrid, q))
-        ranks["hybrid+rerank"].append(_first_hit_rank(reranked, q))
+        runs["dense"].append((dense, q))
+        runs["hybrid"].append((hybrid, q))
+        runs["hybrid+rerank"].append((reranked, q))
 
     metrics = {
         "backend": "local",
@@ -82,7 +89,7 @@ def main() -> None:
         "questions": args.questions,
         "n": len(questions),
         "pool": args.pool,
-        **{c: _summarize(ranks[c]) for c in CONFIGS},
+        **{c: _summarize(runs[c]) for c in CONFIGS},
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -91,8 +98,7 @@ def main() -> None:
     header = f"{'metric':12}" + "".join(f"{c:>16}" for c in CONFIGS)
     print(header)
     print("-" * len(header))
-    for k in KS:
-        m = f"recall@{k}"
+    for m in [f"{name}@{k}" for name in ("recall", "precision") for k in KS]:
         print(f"{m:12}" + "".join(f"{metrics[c][m]:>16.3f}" for c in CONFIGS))
     print(f"{'mrr':12}" + "".join(f"{metrics[c]['mrr']:>16.3f}" for c in CONFIGS))
     print(f"\nWrote {args.out}")

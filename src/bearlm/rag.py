@@ -4,7 +4,7 @@ Also holds query rewriting, the prompt optimizer, and the grounded answer path
 (confidence gate + project-first fallback) used by projects and uploads.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openai import OpenAI
 
@@ -23,6 +23,7 @@ class Answer:
     citations: list[dict]
     source: str = "corpus"  # "project" | "upload" | "corpus" | "none"
     rewritten_query: str | None = None
+    docs: list = field(default_factory=list, repr=False)  # exact context used (for eval)
 
 
 def retrieve(question, k=None):
@@ -79,7 +80,9 @@ _client = OpenAI() if config.BACKEND == "openai" else None
 _STRICT_SYSTEM = (
     "You are BearLM, a study assistant for UC Berkeley CS/DS courses. "
     "Answer the question using ONLY the provided context. "
-    "If the answer is not contained in the context, reply with exactly: "
+    "If the context is relevant but incomplete, answer with what it supports and "
+    "say briefly what is missing. Only if the context contains nothing relevant "
+    "to the question, reply with exactly: "
     "\"I don't know based on the course materials.\" "
     "Cite sources inline as (course section). "
     "Format for a Markdown renderer. Use fenced code blocks ONLY for actual code, "
@@ -170,7 +173,7 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
                 "section": m.get("section"),
                 "source": m.get("source"),
             })
-    return Answer(text, citations, rewritten_query=rewritten)
+    return Answer(text, citations, rewritten_query=rewritten, docs=docs)
 
 
 def _dedupe_citations(docs):
@@ -359,8 +362,10 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     system = (
         "You are BearLM, a grounded study assistant having a conversation. Answer "
         "the latest question using ONLY the provided context (plus the conversation "
-        "so far for reference). If the answer is not contained in the context, reply "
-        f"with exactly: \"{config.GROUNDED_REFUSAL}\" Cite sources inline as "
+        "so far for reference). If the context is relevant but incomplete, answer "
+        "with what it supports and say briefly what is missing. Only if the context "
+        "contains nothing relevant to the question, reply with exactly: "
+        f"\"{config.GROUNDED_REFUSAL}\" Cite sources inline as "
         "(course section). Format for a Markdown renderer: fenced code blocks ONLY "
         "for actual code (```python, ```sql); math in LaTeX (inline $...$, display "
         "$$...$$); tabular or relational data as a Markdown table written directly, "
@@ -374,7 +379,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
 
     text = (_get_llm() | StrOutputParser()).invoke(msgs)
-    return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten)
+    return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten, docs=docs)
 
 
 def answer(question, k=None, rewrite=None):
@@ -401,7 +406,7 @@ def _answer_openai(question, k=None):
                 "section": chunk["section"],
                 "source": chunk.get("filename"),
             })
-    return Answer(text, citations)
+    return Answer(text, citations, docs=chunks)
 
 
 if __name__ == "__main__":

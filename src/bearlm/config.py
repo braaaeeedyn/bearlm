@@ -46,7 +46,7 @@ TOKENIZER_ENCODING = os.environ.get("TOKENIZER_ENCODING", "cl100k_base")
 
 # --- Retrieval + reranking ---
 RETRIEVAL_K = int(os.environ.get("RETRIEVAL_K", "4"))
-RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "15"))
 RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "4"))
