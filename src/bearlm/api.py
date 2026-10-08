@@ -303,7 +303,12 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         history=history,
         rewrite=req.rewrite,
         corpus_courses=(project or {}).get("corpus_courses"),
+        memory=projects.memory_ids(slug),
     )
+    # Remember chunks that grounded a topical answer (not refusals or summaries).
+    if result.source in ("project", "corpus") and not rag._is_meta_question(question):
+        coll = projects.project_collection(slug) if result.source == "project" else config.CHROMA_COLLECTION
+        projects.remember(slug, coll, result.docs)
     # Persist both turns so the conversation survives reloads.
     projects.append_message(slug, chat_id, "user", question)
     projects.append_message(slug, chat_id, "assistant", result.text,

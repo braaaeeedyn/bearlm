@@ -95,7 +95,8 @@ and served with `Cache-Control: no-cache`.
 - Collapsible sidebar; projects listed newest→oldest.
 - Per-project **reference PDFs** with **list & grid (thumbnail) views**, open-in-new-tab, and remove.
 - **Multiple multi-turn chats** per project (persistent history; whole conversation fed back as context; follow-ups resolve pronouns).
-- **Reset context** (clear chats, keep PDFs).
+- **Reset context** (clear chats and retrieval memory, keep PDFs).
+- **Retrieval memory**: chunk ids behind past answers (in `project.json`) are re-added to the rerank pool for follow-ups; they still must clear the gate.
 - **Per-project corpus scoping**: checkboxes choose which course subjects the project may fall back on (none = project-only).
 - **Stale-project prompt**: projects >1 week old prompt for deletion on open.
 
@@ -145,7 +146,7 @@ Pages: `/` (Ask), `/projects`, `/analytics`, `/api/docs` (FastAPI).
 `CHROMA_DIR/COLLECTION` · `RETRIEVAL_K` · `RERANK_ENABLED/MODEL/CANDIDATES/TOP_N` ·
 `RERANK_MIN_SCORE` (confidence gate, 0.02) · `HYBRID_SEARCH_ENABLED` (true) ·
 `RRF_K` (60) · `QUERY_REWRITE_ENABLED` (false; per-request override) ·
-`PROJECT_FALLBACK_TO_CORPUS` (true) · `MIN_RELEVANCE` (reserved) ·
+`PROJECT_FALLBACK_TO_CORPUS` (true) · `PROJECT_MEMORY_SIZE/MERGE` (40/8; 0 disables) · `MIN_RELEVANCE` (reserved) ·
 `PROJECTS_DIR` · `UPLOADS_DIR` · `ANALYTICS_DB` ·
 OpenAI backend only: `OPENAI_API_KEY`, `MONGODB_URI`.
 

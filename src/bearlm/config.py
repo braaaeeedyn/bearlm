@@ -67,6 +67,10 @@ UPLOADS_DIR = Path(os.environ.get("UPLOADS_DIR", str(_ROOT / "data" / "uploads")
 PROJECT_COLLECTION_PREFIX = "project_"
 UPLOAD_COLLECTION_PREFIX = "upload_"
 PROJECT_FALLBACK_TO_CORPUS = os.environ.get("PROJECT_FALLBACK_TO_CORPUS", "true").strip().lower() in ("1", "true", "yes")
+# Per-project retrieval memory: max chunk ids stored (LRU; 0 disables) and how
+# many of the most recent are merged into one query's rerank pool.
+PROJECT_MEMORY_SIZE = int(os.environ.get("PROJECT_MEMORY_SIZE", "40"))
+PROJECT_MEMORY_MERGE = int(os.environ.get("PROJECT_MEMORY_MERGE", "8"))
 MIN_RELEVANCE = float(os.environ.get("MIN_RELEVANCE", "0.30"))
 GROUNDED_REFUSAL = "I don't know based on the provided materials."
 

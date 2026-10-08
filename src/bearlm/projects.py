@@ -186,6 +186,7 @@ def clear_chats(slug: str) -> None:
     if meta is None:
         return
     meta["chats"] = []
+    meta["memory"] = {}  # memory came from these conversations; forget it too
     _save(meta)
 
 
@@ -215,8 +216,44 @@ def remove_pdf(slug: str, filename: str) -> dict:
     except FileNotFoundError:
         pass
     meta["pdfs"] = [p for p in meta.get("pdfs", []) if p["filename"] != safe]
+    prefix = f"{project_collection(slug)}:{safe}:"
+    mem = meta.get("memory", {}).get(project_collection(slug), {})
+    for cid in [c for c in mem if c.startswith(prefix)]:
+        del mem[cid]
     _save(meta)
     return {"removed": safe}
+
+
+# --- retrieval memory (chunk ids that answered past questions) ---------------
+
+def memory_ids(slug: str) -> dict[str, list[str]]:
+    """Most-recent remembered chunk ids per collection, capped at PROJECT_MEMORY_MERGE."""
+    meta = get_project(slug) or {}
+    if config.PROJECT_MEMORY_SIZE <= 0:
+        return {}
+    return {coll: sorted(m, key=m.get, reverse=True)[: config.PROJECT_MEMORY_MERGE]
+            for coll, m in meta.get("memory", {}).items() if m}
+
+
+def remember(slug: str, collection: str, docs) -> None:
+    """Record the chunk ids of an answer's docs (LRU, capped at PROJECT_MEMORY_SIZE)."""
+    ids = [(d.metadata or {}).get("chunk_id") for d in docs or []]
+    ids = [i for i in ids if i]
+    if config.PROJECT_MEMORY_SIZE <= 0 or not ids:
+        return
+    meta = get_project(slug)
+    if meta is None:
+        return
+    mem = meta.setdefault("memory", {})
+    now = _now()
+    for cid in ids:
+        mem.setdefault(collection, {})[cid] = now
+    entries = sorted(((ts, coll, cid) for coll, m in mem.items() for cid, ts in m.items()),
+                     reverse=True)
+    for _, coll, cid in entries[config.PROJECT_MEMORY_SIZE:]:
+        del mem[coll][cid]
+    meta["memory"] = {c: m for c, m in mem.items() if m}
+    _save(meta)
 
 
 def append_message(slug: str, chat_id: str, role: str, content: str,

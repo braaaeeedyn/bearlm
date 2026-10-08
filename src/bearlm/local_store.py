@@ -189,6 +189,21 @@ def collection_count(collection_name: str) -> int:
         return 0
 
 
+def get_docs_by_ids(collection_name: str, ids: list[str]) -> list:
+    """Fetch chunks by id as Documents; missing ids/collections are skipped ([] on error)."""
+    from langchain_core.documents import Document
+
+    if not ids:
+        return []
+    try:
+        got = get_vectorstore(collection_name)._collection.get(
+            ids=list(ids), include=["documents", "metadatas"])
+    except Exception:
+        return []
+    return [Document(page_content=t or "", metadata=m or {})
+            for t, m in zip(got["documents"], got["metadatas"])]
+
+
 def delete_pdf_from_collection(collection_name: str, filename: str) -> None:
     """Delete all chunks that came from one PDF (matched by `source` metadata)."""
     try:

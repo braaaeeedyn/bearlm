@@ -217,17 +217,30 @@ def _is_meta_question(question: str) -> bool:
     return bool(_META_RE.search(question or ""))
 
 
-def _top_docs(question, collection_name, gated=True, allowed_courses=None):
+def _top_docs(question, collection_name, gated=True, allowed_courses=None, extra_ids=None):
     """Vector-retrieve a pool from one collection and rerank it.
 
     gated=True keeps only chunks clearing config.RERANK_MIN_SCORE (the confidence
     gate → empty list means "not covered", so callers refuse or fall back).
     gated=False skips the threshold and just returns the reranked top chunks (for
     meta/summary questions, where topical scores are uninformative).
+    extra_ids (gated only): remembered chunk ids added to the pool; they are
+    re-scored by the reranker and must clear the gate like any other chunk.
     """
     from . import rerank, search
 
     cands = search.candidates(question, collection_name, config.RERANK_CANDIDATES, allowed_courses)
+    if gated and extra_ids:
+        from . import local_store
+
+        # Corpus ids may point at new text after a re-embed; harmless, the reranker scores the text.
+        cands, seen = list(cands), {search._doc_key(d) for d in cands}
+        for d in local_store.get_docs_by_ids(collection_name, extra_ids):
+            if allowed_courses and (d.metadata or {}).get("course") not in allowed_courses:
+                continue
+            if search._doc_key(d) not in seen:
+                seen.add(search._doc_key(d))
+                cands.append(d)
     if not cands:
         return []
     scored = rerank.rerank_scored(question, cands)
@@ -305,7 +318,7 @@ def _make_retrieval_query(question, history, rewrite):
 
 
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None):
+                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None, memory=None):
     """Grounded answer with a confidence gate, project-first fallback, and
     optional multi-turn conversation history.
 
@@ -314,6 +327,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     - Else, if fallback is allowed, try the main course corpus.
     - Else refuse with config.GROUNDED_REFUSAL rather than guess.
     `history` is a list of prior {role, content} turns for conversational memory.
+    `memory` is {collection: [chunk ids]} merged into the gated rerank pools.
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_core.output_parsers import StrOutputParser
@@ -341,7 +355,8 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
             docs = _top_docs(rq, primary_collection, gated=False)
             used = primary_label if docs else "none"
         else:
-            docs = _top_docs(rq, primary_collection, gated=True)
+            docs = _top_docs(rq, primary_collection, gated=True,
+                             extra_ids=(memory or {}).get(primary_collection))
             if docs:
                 used = primary_label
 
@@ -352,7 +367,8 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     corpus_disabled = corpus_courses is not None and len(corpus_courses) == 0
     if (not docs and (allow_fallback or not primary_collection)
             and not (meta and primary_collection) and not corpus_disabled):
-        docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True, allowed_courses=corpus_courses)
+        docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True, allowed_courses=corpus_courses,
+                         extra_ids=(memory or {}).get(config.CHROMA_COLLECTION))
         if docs:
             used = "corpus"
 

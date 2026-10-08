@@ -169,6 +169,8 @@ All settings have env overrides (see `.env.example`); defaults live in
 | `RERANK_ENABLED` | `true` | Rerank corpus retrieval (retrieve 15 → keep 4). |
 | `RERANK_MIN_SCORE` | `0.02` | Confidence gate for project/upload answers. |
 | `PROJECT_FALLBACK_TO_CORPUS` | `true` | Let project answers fall back to the corpus. |
+| `PROJECT_MEMORY_SIZE` | `40` | Per-project memory of relevant chunk ids (LRU; `0` disables). |
+| `PROJECT_MEMORY_MERGE` | `8` | Remembered chunks added to each query's rerank pool. |
 | `MIN_RELEVANCE` | `0.30` | Vector-relevance floor (reserved). |
 
 For the OpenAI backend, `OPENAI_API_KEY` and `MONGODB_URI` are required.
