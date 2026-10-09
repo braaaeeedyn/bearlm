@@ -36,7 +36,7 @@ The local stack needs no API keys and no cloud services.
                          └───────────────────────────────────────────────────────────┘
 
                          ┌──────────────────── query (online) ──────────────────────┐
-  question ─► Chroma retriever (k=4, or 15→rerank→4 if RERANK_ENABLED)
+  question ─► Chroma retriever (k=4, or 8→rerank→4 if RERANK_ENABLED)
                     │
                     ▼
              ChatPromptTemplate (strict: answer only from context;
@@ -166,11 +166,13 @@ All settings have env overrides (see `.env.example`); defaults live in
 | `OLLAMA_NUM_CTX` | `8192` | Generator context window. |
 | `CHROMA_DIR` | `./db` | On-disk Chroma store. |
 | `RETRIEVAL_K` | `4` | Chunks fed to the LLM. |
-| `RERANK_ENABLED` | `true` | Rerank corpus retrieval (retrieve 15 → keep 4). |
+| `RERANK_ENABLED` | `true` | Rerank corpus retrieval (retrieve `RERANK_CANDIDATES` → keep 4). |
+| `RERANK_CANDIDATES` | `8` | Candidates scored by the reranker (`BAAI/bge-reranker-base`, `RERANK_MODEL`); 8 measured ~2x faster than 15 at equal recall (`eval/speed_experiments.json`; the sweep's first config had warm-up-inflated search time, corrected ~6.5 s vs 2.9 s search+rerank). |
 | `RERANK_MIN_SCORE` | `0.02` | Confidence gate for project/upload answers. |
 | `PROJECT_FALLBACK_TO_CORPUS` | `true` | Let project answers fall back to the corpus. |
 | `PROJECT_MEMORY_SIZE` | `40` | Per-project memory of relevant chunk ids (LRU; `0` disables). |
 | `PROJECT_MEMORY_MERGE` | `8` | Remembered chunks added to each query's rerank pool. |
+| `NEAR_REPEAT_THRESHOLD` | `0` | Off by default. When > 0, a project question this cosine-close to an earlier one reuses its retrieval and gate outcome (in-memory). Rejected as a default: follow-ups (retrieved as previous turn + follow-up) reach 0.977 against the previous turn, so no threshold avoids false reuse while keeping half the true repeats (`eval/speed_experiments.json`). |
 | `MIN_RELEVANCE` | `0.30` | Vector-relevance floor (reserved). |
 
 For the OpenAI backend, `OPENAI_API_KEY` and `MONGODB_URI` are required.

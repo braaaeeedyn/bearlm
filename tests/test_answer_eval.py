@@ -43,3 +43,19 @@ def test_run_one_backend_writes_metric_columns(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         answer_eval.run_one_backend(old, str(qpath))
     assert old.read_text(encoding="utf-8") == before
+
+
+def test_answer_eval_writes_stage_timings(monkeypatch, tmp_path):
+    timings = {"rewrite_s": 0.0, "search_s": 0.25, "rerank_s": 1.5, "generate_s": 6.125, "total_s": 7.875}
+    monkeypatch.setattr(rag, "answer", lambda q, *a, **k: rag.Answer("ok", [], docs=[], timings=timings))
+    qpath = tmp_path / "q.jsonl"
+    qpath.write_text(json.dumps({"question": "q0"}), encoding="utf-8")
+    out = tmp_path / "answers.csv"
+    answer_eval.run_one_backend(out, str(qpath), judge=False)
+
+    with out.open(encoding="utf-8") as f:
+        row = next(csv.DictReader(f))
+    assert answer_eval.FIELDS.index("generate_s") < answer_eval.FIELDS.index("grade")
+    assert answer_eval.FIELDS.index("rewrite_s") > answer_eval.FIELDS.index("output_tokens")
+    for k in ("rewrite_s", "search_s", "rerank_s", "generate_s"):
+        assert float(row[k]) == timings[k], k

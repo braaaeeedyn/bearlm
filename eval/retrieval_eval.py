@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from bearlm import config, local_store  # noqa: E402
 
 KS = (1, 3, 5)
 CONFIGS = ("dense", "hybrid", "hybrid+rerank")
+# Known-hard in-scope questions: (question, regex a correct top chunk should match).
+PROBES = [("What is a B+ tree?", r"B\+\s*-?\s*tree")]
 
 
 def _first_hit_rank(ordered_docs, q) -> int | None:
@@ -73,15 +76,31 @@ def main() -> None:
     if not questions:
         sys.exit(f"No questions in {args.questions}.")
 
+    def top(scored):
+        return scored[0][1] if scored else float("-inf")
+
     runs = {c: [] for c in CONFIGS}
+    in_scope_tops = []
     for q in questions:
         query = q["question"]
         dense = vs.similarity_search(query, k=args.pool)
         hybrid = search.hybrid_candidates(query, config.CHROMA_COLLECTION, args.pool)
-        reranked = rerank.rerank(query, hybrid, top_n=len(hybrid))
+        scored = rerank.rerank_scored(query, hybrid)  # same order as rerank.rerank, plus scores
+        in_scope_tops.append(top(scored))
         runs["dense"].append((dense, q))
         runs["hybrid"].append((hybrid, q))
-        runs["hybrid+rerank"].append((reranked, q))
+        runs["hybrid+rerank"].append(([d for d, _ in scored], q))
+
+    def rerank_hybrid(query):
+        return rerank.rerank_scored(query, search.hybrid_candidates(query, config.CHROMA_COLLECTION, args.pool))
+
+    off_tops = [top(rerank_hybrid(query)) for query in _common.OFF_TOPIC]
+    probes = []
+    for query, pattern in PROBES:
+        scored = rerank_hybrid(query)
+        probes.append({"question": query, "top_score": top(scored),
+                       "term_hit": any(re.search(pattern, _common.doc_text(d), re.I)
+                                       for d, _ in scored[:config.RERANK_TOP_N])})
 
     metrics = {
         "backend": "local",
@@ -90,6 +109,8 @@ def main() -> None:
         "n": len(questions),
         "pool": args.pool,
         **{c: _summarize(runs[c]) for c in CONFIGS},
+        "gate": {**_common.gate_stats(in_scope_tops, off_tops, config.RERANK_MIN_SCORE),
+                 "off_topic_top_scores": off_tops, "probes": probes},
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -101,6 +122,11 @@ def main() -> None:
     for m in [f"{name}@{k}" for name in ("recall", "precision") for k in KS]:
         print(f"{m:12}" + "".join(f"{metrics[c][m]:>16.3f}" for c in CONFIGS))
     print(f"{'mrr':12}" + "".join(f"{metrics[c]['mrr']:>16.3f}" for c in CONFIGS))
+    g = metrics["gate"]
+    print(f"\ngate (min_score {g['min_score']}): in-scope below {g['in_scope_below_gate']}/"
+          f"{g['n_in_scope']}, off-topic at/above {g['off_topic_at_or_above_gate']}/{g['n_off_topic']}")
+    for p in probes:
+        print(f"probe {p['question']!r}: top score {p['top_score']:.3f}, term hit {p['term_hit']}")
     print(f"\nWrote {args.out}")
 
 

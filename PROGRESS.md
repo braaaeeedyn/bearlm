@@ -1,109 +1,44 @@
-# BearLM — Progress & Roadmap
+# BearLM — Running log
+_Append-only: add new entries at the bottom; never edit old ones except to fix factual errors. How the app works now: PROJECT_HANDOFF.md._
 
-_Last updated: 2026-09-25 (Stages 6–7 complete: FastAPI web app + analytics)_
+## 2026-09-25 — OpenAI + MongoDB Atlas era (c389fe0..bb0cfcf)
+**What changed:** Stage 4 ingestion (PDF/Markdown/ipynb extraction, ~500-token word-window chunks, `text-embedding-3-small`, MongoDB Atlas vector index), Stage 5 RAG core (`$vectorSearch` top-5 → `gpt-4o-mini`, cited answers), Stages 6–7: the Streamlit prototype was dropped for a FastAPI backend with a hand-built HTML/CSS/JS frontend (light/dark, LaTeX) and an analytics page over `query_logs`.
+**Why:** Build a cited Q&A assistant over Berkeley course materials; FastAPI + custom frontend gave full control over the UI and analytics.
+**Measured:** 2,241 chunks across 6 courses in Atlas (1536-dim, cosine). No quality metrics yet.
+**Decision:** Superseded by the local stack (next entry); the OpenAI path stays behind `BACKEND=openai` for comparison.
 
-## ⭐ START HERE NEXT SESSION
-Stages 4–7 are **done and working**. The app is now a **FastAPI backend + a
-hand-built HTML/CSS/JS frontend** (the old Streamlit app has been removed). Ask a
-question, get a cited, LaTeX-rendered answer; an analytics page charts usage.
+## 2026-09-29 — Local stack and product features (1201990..c0df613, a34b7ef)
+**What changed:** Local backend (Ollama `llama3.1:8b` + `nomic-embed-text`, Chroma, token splitter) behind the `BACKEND` flag; Projects (per-project PDFs, multi-turn chats, reset context, stale-project prompt, list/grid PDF views), ad-hoc PDF upload, reranker confidence gate (8df1d2e lowered it 0.1 → 0.02 and added the meta-question bypass); hybrid BM25+dense RRF search, query rewriting, prompt optimizer (3da9eec); local SQLite analytics + practice questions (36f3b36); generated 50-question benchmark and retrieval ablation (5fafb5b); RAGAS with a local judge (f39b91d, 5a7caeb, d044e9d); prompt provenance (27ad026); per-project corpus scope and no-cache static assets (69471bd, fbfe0f6); rich answer formatting (c0df613); Berkeley night theme redesign (a34b7ef, 2026-10-04).
+**Why:** Zero-cost, no-API-key operation, and a real product surface (projects, uploads, analytics) with anti-hallucination.
+**Measured:** Corpus re-embedded to ~10,394 chunks over 10 courses. Retrieval (n=50, pool 15): recall@1 dense 0.56 / hybrid 0.60 / hybrid+rerank 0.82; recall@5 0.76 / 0.84 / 0.86; MRR 0.64 / 0.70 / 0.84. RAGAS (n=6): faithfulness 0.55 → 0.83 and answer_relevancy 0.80 → 0.97 with hybrid+rerank.
+**Decision:** Local is the primary path; hybrid search on; reranking still opt-in at this point.
 
-Run it locally:
-```
-uv run uvicorn bearlm.api:app --reload      # http://localhost:8000
-```
+## 2026-10-08 — Run 1: softer refusals, rerank by default, retrieval/answer eval (3656e35)
+**What changed:** Both system prompts now answer from partial context and name what is missing, refusing only when nothing is relevant; `RERANK_ENABLED` default → true; `Answer.docs`; eval helpers (id-level recall@k, page-level precision@k, citation correctness, refusal detection); `answer_eval.py` gained refusal, citation-correctness, judge faithfulness/completeness and token columns; `report.py` gained `--out-dir`, precision rows and an answer-quality table.
+**Why:** Suspected over-refusal on the main page, and retrieval and answer quality needed to be measured separately and automatically.
+**Measured:** Over-refusal did not reproduce (0/15 refusals before and after). After (n=15): faithfulness 0.860, completeness 0.907 (llama3.1:8b judge, noisy), citation correctness 0.200; median latency 12.09 s vs 6.63 s before (rerank on + cold load). Retrieval (n=50) unchanged: hybrid+rerank recall@1/3/5 0.82/0.86/0.86, MRR 0.84; precision@1 0.82. All 4 off-topic probes refused; "B+ tree" now refused (a retrieval miss).
+**Decision:** Approved and shipped; latency cost flagged for a warm re-measurement.
 
-**Next up: Stage 8 — deployment.** FastAPI does NOT fit Streamlit Community Cloud;
-target Render / Railway / Fly.io (they run `uvicorn`). Add a Dockerfile or start
-command, set `OPENAI_API_KEY` + `MONGODB_URI` as platform secrets, and allowlist
-the host in Atlas Network Access.
+## 2026-10-08 — Run 2: per-project chunk memory (748f5e7)
+**What changed:** `PROJECT_MEMORY_SIZE` / `PROJECT_MEMORY_MERGE`: chunk ids behind past project answers are stored in `project.json` (LRU) and re-added to the rerank pool for later questions; they must still clear the gate. Reset and PDF removal clear them.
+**Why:** Help follow-ups that drift away from the immediately previous turn keep relevant context.
+**Measured:** Live 5-question hash-join follow-up sequence: identical refusals (1/5) and doc overlap with memory off and at 40; latency differences lost in 1–2 s noise. No measured gain.
+**Decision:** The review recommended size 0 (off) because there was no measured gain; it shipped at 40 anyway. Turning it off remains open until an eval with drifting follow-ups shows a recall gain.
 
----
+## 2026-10-08 — Run 3: speed experiments (uncommitted)
+**What changed:** `Answer.timings` (per-stage seconds); `eval/speed_experiments.py` with `--stages`, `--rerank-sweep`, `--near-repeat`, `--answer-csv`, `--decide` and fixed keep/reject criteria; near-repeat reuse in `answer_grounded` (per-project in-memory cache, `NEAR_REPEAT_THRESHOLD`); `RERANK_CANDIDATES` default 15 → 8; `tests/test_speed.py`.
+**Why:** Answers took ~12–22 s; find where the time goes and cut it without losing quality.
+**Measured:** Stage medians at bge/15, n=20 (overlapped a pytest run, so slightly high): search 2.29 s, rerank 7.50 s, generate 10.86 s, total 21.76 s. torch is a CPU build, so the reranker runs on CPU. Rerank sweep (n=50): C (bge, 8 candidates) search+rerank 2.89 s vs A (bge, 15) 8.60 s recorded, ~6.5 s once A's first-config warm-up is corrected (~2x); R@5 0.86 and MRR 0.84 for A/B/C; MiniLM (D/E) fails on MRR (0.721). Answers A vs C (n=50): faithfulness 0.842 vs 0.835, completeness 0.869 vs 0.876, citation correctness 0.125 vs 0.184, refusals 2 vs 1, median latency 16.5 s vs 9.9 s. Near-repeat on standalone pairs (22 same / 24 different): max different-pair cosine 0.9484, t* = 0.96, hit rate 1.00, 0 false reuse. Review then measured history-prefixed follow-ups (previous turn → `prev + " " + follow-up`, as `_retrieval_query` builds it): Naive Bayes advantages → "What are its disadvantages?" 0.9747; hash join advantages → "What about the disadvantages?" 0.9725; VAE → "How is it trained?" 0.9456; disjoint-set find → "What about union?" 0.9406; L1 → "And L2?" 0.9399; cross-chat "its advantages?" vs "its disadvantages?" 0.9520. 5 of 10 off-topic probes scored ≥ 0.02 on bge.
+**Decision:** Keep C (bge, 8 candidates, gate 0.02). Near-repeat was kept at 0.96 by `--decide`, then rejected in review: the first two follow-ups above clear 0.96 and would silently reuse the wrong chunks. Fix deferred to run 4.
 
-BearLM is a RAG-based Q&A assistant grounded in Berkeley course materials. Ask a
-question, get a cited answer (course + section). Stack: **FastAPI** + MongoDB Atlas
-Vector Search + OpenAI (embeddings + chat), a custom light/dark web UI, and a
-usage-analytics page. See `PROJECT_HANDOFF.md` for full background.
+## 2026-10-08 — Run 4: near-repeat re-test, metric suite, running/current docs (uncommitted)
+**What changed:** 24 history-prefixed pairs appended to `eval/near_repeat_pairs.jsonl` (14 `history-followup`, 4 `history-sibling-followup`, 6 `history-same`; built as `prev + " " + follow-up`, the way `_retrieval_query` builds the retrieval query); `--near-repeat` and `--decide` re-run; `NEAR_REPEAT_THRESHOLD` default 0.96 → 0 (off); `--stages` now warms up first and records its config. Metric suite: `retrieval_eval.py` `gate` section (in-scope/off-topic gate counts, B+ tree probe), `answer_eval.py` stage-timing columns, `report.py --json`, `OFF_TOPIC` and `gate_stats` in `eval/_common.py`. README "~3x" → "~2x"; `.env.example` `RERANK_CANDIDATES` 15 → 8. PROGRESS.md became this running log; PROJECT_HANDOFF.md now describes only the current app.
+**Why:** Run 3's review showed near-repeat at 0.96 falsely reuses retrieval for real follow-ups; the speed claim and `.env.example` were wrong; metrics for retrieval, answers, per-stage latency and cost were not in one place.
+**Measured:** Near-repeat (70 pairs, live nomic-embed-text): the review's five follow-up cosines reproduced exactly (0.9747, 0.9725, 0.9456, 0.9406, 0.9399); max different-pair cosine 0.9768 ("What are higher-order functions in Python?" → "Can you give an example?"); t* = 0.99, where hit rate is 11/28 = 0.39 (< 0.5), 0 false reuse, gate agreement 1.0, overlap 0.93, overhead 0.051 s. At 0.96 there would be 3 false reuses; at 0.98, 0. Stage breakdown at current defaults (bge, 8 candidates, rerank on, rewrite off; 20 questions after one warm-up): median search 2.15 s, rerank 2.10 s, generate 4.83 s, total 9.64 s (p95 total 12.91 s); reranker on CPU. Metric suite (n=50, pool 8): hybrid+rerank recall@1/5 0.82/0.86, MRR 0.84 (unchanged from run 3); gate: 2/50 in-scope below 0.02, 5/10 off-topic at or above it (max 0.68); B+ tree probe top score 0.09, term hit false. Answers: refusal 0.02, faithfulness 0.83, completeness 0.88 (self-graded judge), citation correctness 0.18, uncited 0.82, latency median 9.9 s / p95 14.3 s, stage medians search 2.17 s, rerank 2.00 s, generate 5.08 s; prompt ~1,730 tokens, output ~123; $0/query local, OpenAI estimate $0.00033/query.
+**Decision:** `--decide` rejected near-repeat (hit rate 0.39 < 0.5 at t* = 0.99), so it ships off (`NEAR_REPEAT_THRESHOLD=0`); code and tests stay for opt-in use. Cheaper rerank stays "keep C". Next steps, in the order the metric rules trigger: (1) GPU torch, rerank 2.00 s ≥ 1.5 s (dependency change, needs the user's OK); (2) generation latency, generate is 51% of the median; (3) gate recalibration, 5/10 off-topic pass, but a gate at the max off-topic score (0.68) would refuse 8/50 in-scope instead of 2, so a plain threshold change fails the ≤ +1 rule; (4) citation format, uncited 0.82; (5) BM25 tokenizer for `B+`/`C++`. Retrieval, faithfulness and refusal are within bounds.
 
----
-
-## Status at a glance
-
-| # | Milestone | State |
-|---|-----------|-------|
-| 0 | Environment (uv, `.env`, Atlas cluster, deps) | ✅ Done |
-| 1 | Corpus collected in `data/raw/` | ✅ Done (CS189 still pending) |
-| 2 | Scaffolds written (`config`, `db`, `doc_processor`) | ✅ Done |
-| 3 | **Stage 4 — Ingestion pipeline** | ✅ Done & run — 2,241 chunks in Atlas |
-| 4 | Atlas Vector Search index (`vector_index`) | ✅ Done — ACTIVE (1536 dims, cosine) |
-| 5 | **Stage 5 — Retrieval + RAG core** (`rag.py`) | ✅ Done & tested — cited answers |
-| 6 | **Stage 6 — Web UI** (FastAPI + custom frontend) | ✅ **Done** — light/dark, LaTeX, cited answers |
-| 7 | **Stage 7 — Analytics** (`/analytics`) | ✅ **Done** — tiles + SVG charts from `query_logs` |
-| 8 | Stage 8 — Cloud deployment | 🔜 **NEXT** |
-| 9 | Stage 9 — Polish + README | ⬜ Not started |
-
----
-
-## Architecture (current)
-
-**Backend — `src/bearlm/`**
-- `config.py` — secrets (`.env`) + constants (models, chunk sizes, DB/collection names).
-- `db.py` — Atlas client; `get_chunks_collection()`, `get_query_logs_collection()`, `ping()`.
-- `doc_processor.py` — ingestion: extract PDF (`pdfplumber`) / markdown / `.ipynb`,
-  chunk (~500 tok / ~50 overlap, word-approx), embed (`text-embedding-3-small`),
-  insert into `bearlm.chunks`. Run: `uv run python -m bearlm.doc_processor`.
-- `rag.py` — `retrieve()` ($vectorSearch, top-5) → `build_prompt()` → `answer()`
-  returns `Answer(text, citations)`. `CHAT_MODEL = "gpt-4o-mini"`. The system prompt
-  asks the model to wrap math in `$…$` / `$$…$$`.
-- `api.py` — **FastAPI app** (`bearlm.api:app`). Serves the frontend and:
-  - `POST /api/ask` → `{answer, citations}`, logs each question to `bearlm.query_logs`.
-  - `GET /api/stats` → aggregated analytics (total, uncited, by-course, per-day, recent unanswered).
-  - `GET /api/courses` → distinct corpus courses (feeds the dynamic footer).
-  - `GET /` → `index.html`; `GET /analytics` → `analytics.html`.
-
-**Frontend — `web/`** (no framework, no build step)
-- `index.html` / `app.js` — Ask page: hero, pill search, suggestion chips, answer card,
-  citation tags. Renders markdown (`marked`) + math (`KaTeX`), sanitized (`DOMPurify`).
-  A post-processing step wraps the model's bare `( … )` / `[ … ]` LaTeX in `$…$`.
-- `analytics.html` / `analytics.js` — stat tiles + hand-built **SVG** charts (course
-  bars, per-day columns) + unanswered-questions list. No charting dependency.
-- `styles.css` — the Cohere-inspired design system: light + dark via `[data-theme]`
-  (☀/☾ toggle, persisted to `localStorage`), 22px cards, Space Grotesk / Inter /
-  Space Mono, cool-gray borders, blue (`#1863dc`) only on interaction.
-- `vendor/` — `marked`, `DOMPurify`, and full `KaTeX` (css/js/fonts) vendored
-  **locally** — zero external runtime dependencies (deploy-safe). Only Google Fonts
-  loads from the network.
-
-**Data (MongoDB Atlas `bearlm`)**
-- `chunks` — 2,241 embedded chunks; Vector Search index `vector_index` (1536, cosine), ACTIVE.
-- `query_logs` — `{question, timestamp (UTC), courses: [...]}`, written per question.
-
----
-
-## What's next — in order
-
-### ▶ Stage 8 — Cloud deployment — NEXT
-- Add a `Dockerfile` or platform start command running `uvicorn bearlm.api:app --host 0.0.0.0 --port $PORT`.
-- Deploy on Render / Railway / Fly.io.
-- Set `OPENAI_API_KEY` + `MONGODB_URI` as platform secrets (never commit `.env`).
-- Atlas Network Access: allowlist the host (`0.0.0.0/0` if the platform has no fixed egress IP).
-- ✅ Checkpoint: public URL answers a question end-to-end and shows analytics.
-
-### Stage 9 — Polish + README
-- Fill the empty `README.md`: what it is, stack, `uv sync`, run commands, screenshots, live URL.
-
----
-
-## Adding more textbooks later
-1. Drop file(s) into `data/raw/<course>/` (folder name → the `course` citation label).
-2. Re-run `uv run python -m bearlm.doc_processor`.
-3. The Atlas index auto-indexes new docs; the frontend course list updates via `/api/courses`.
-
-Notes: only **PDF / `.md` / `.ipynb`** are extracted (other formats need a new
-extractor); `ingest()` currently wipes + re-embeds the whole corpus each run (cheap
-now, could be made incremental); Atlas M0 free tier is 512 MB (lots of headroom).
-
-## Backlog / optional
-- Source CS189 corpus (26 note PDFs) and re-run ingestion.
-- Incremental ingestion (embed only new/changed files).
-- `plotly` dependency is now unused (charts are hand-built SVG) — can be removed.
-- Split markdown on headings for sharper citations; real `tiktoken` token counting.
+## 2026-10-08 — Run 4 revision 2: loopback Ollama URL (uncommitted)
+**What changed:** `OLLAMA_BASE_URL` default `http://localhost:11434` → `http://127.0.0.1:11434` in `config.py` and `.env.example` (`.env` does not set it); `--stages` records `stage_breakdown.ollama_base_url`. HANDOFF §11 no longer blames model contention for in-answer search time.
+**Why:** The Checker's probes showed the ~2.1 s in-answer search was a connection cost, not contention: with no chat call, `embed_query` after 8 s idle took 2.08 s at `localhost` (4/4 samples, 2.079–2.088 s) and 0.036 s at `127.0.0.1`; after 0 s or 3 s idle both took ~0.04 s. Idle pooled connections drop, and a new connection to `localhost` costs ~2 s on this Windows machine (likely `::1` refused, then IPv4 fallback). `rag._get_llm()` is uncached, so each generation and judge call opens a fresh connection too.
+**Measured:** `--stages 20` (bge, 8 candidates, rerank on, rewrite off, after one warm-up), before (localhost) → after (127.0.0.1): median search 2.15 → 0.09 s, generate 4.83 → 2.66 s, total 9.64 → 5.09 s (rerank 2.10 → 1.95 s; p95 total 12.91 → 8.08 s). Answer suite (n=50, judge on; after values are the Checker's run): latency median 9.9 → 5.3 s, p95 14.3 → 9.9 s; stage medians search 2.17 → 0.11 s, rerank 2.00 → 1.94 s, generate 5.08 → 2.85 s. Quality unchanged: refusal 0.02, faithfulness 0.83, completeness 0.88, citation correctness 0.18, uncited 0.82. The Builder's answer runs gave 0.841 faithfulness and 0.204 citation correctness, not reproduced; the cause is unknown, and the docs use the Checker's reproducible run.
+**Decision:** Ship the 127.0.0.1 default (search median 0.09 s < 0.5 s keep rule). Chat/judge finding: generate dropped by ~2.2 s in both runs (4.83 → 2.66 s, 5.08 → 2.85 s), the same size as the embed penalty, so each fresh `ChatOllama` connection to `localhost` was paying ~2 s; with 127.0.0.1 a fresh connect is cheap, so `_get_llm` stays uncached. Judge calls go through the same `_get_llm`, so they lose the same ~2 s each (judge probe, n=4: a fresh `ChatOllama` with a one-word prompt took a median 2.57 s after 0 s idle / 2.76 s after 8 s idle at `localhost`, vs 0.37 / 0.61 s at 127.0.0.1; every new connection pays it, not only after an idle gap). Next steps by the threshold table: (1) GPU torch, triggered (rerank 1.94 s ≥ 1.5 s, 36% of the 5.3 s median); (2) generation latency, triggered (generate 2.85 s = 53% of median); (3) gate recalibration, triggered (5/10 off-topic ≥ 0.02) but infeasible as a plain threshold change (max off-topic 0.68 would refuse ~8/50 in-scope); (4) citation format, triggered (uncited 0.82, correctness 0.18); (5) BM25 tokenizer, triggered (B+ tree probe misses). Retrieval was not re-run (the URL cannot change it).

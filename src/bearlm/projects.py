@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -87,6 +88,7 @@ def list_projects() -> list[dict]:
 
 def delete_project(slug: str) -> None:
     """Remove the project's folder and its Chroma collection."""
+    _forget_reuse(slug)
     local_store.drop_collection(project_collection(slug))
     shutil.rmtree(_project_dir(slug), ignore_errors=True)
 
@@ -111,6 +113,7 @@ def add_pdf_to_project(slug: str, data: bytes, filename: str) -> dict:
     chunks = local_store.ingest_pdf_into_collection(
         dest, project_collection(slug), course_label=slug
     )
+    _forget_reuse(slug)
     entry = {"filename": safe, "chunks": chunks, "added": _now()}
     meta["pdfs"] = [p for p in meta.get("pdfs", []) if p["filename"] != safe] + [entry]
     _save(meta)
@@ -188,6 +191,7 @@ def clear_chats(slug: str) -> None:
     meta["chats"] = []
     meta["memory"] = {}  # memory came from these conversations; forget it too
     _save(meta)
+    _forget_reuse(slug)
 
 
 def set_corpus_scope(slug: str, courses: list[str] | None) -> dict:
@@ -201,6 +205,7 @@ def set_corpus_scope(slug: str, courses: list[str] | None) -> dict:
         raise ValueError(f"No such project: {slug}")
     meta["corpus_courses"] = None if courses is None else list(courses)
     _save(meta)
+    _forget_reuse(slug)
     return {"corpus_courses": meta["corpus_courses"]}
 
 
@@ -221,7 +226,25 @@ def remove_pdf(slug: str, filename: str) -> dict:
     for cid in [c for c in mem if c.startswith(prefix)]:
         del mem[cid]
     _save(meta)
+    _forget_reuse(slug)
     return {"removed": safe}
+
+
+# --- near-repeat reuse cache (see rag.answer_grounded) -----------------------
+
+# ponytail: in-memory only, lost on restart (it just refills); persist if reuse
+# across restarts ever matters.
+_reuse: dict[str, deque] = {}
+
+
+def reuse_cache(slug: str) -> deque:
+    """This project's (query vector, docs, source) entries, FIFO-capped at 50."""
+    return _reuse.setdefault(slug, deque(maxlen=50))
+
+
+def _forget_reuse(slug: str) -> None:
+    """Drop the cache whenever what retrieval could return for this project changes."""
+    _reuse.pop(slug, None)
 
 
 # --- retrieval memory (chunk ids that answered past questions) ---------------

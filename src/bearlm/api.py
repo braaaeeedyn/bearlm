@@ -304,6 +304,7 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         rewrite=req.rewrite,
         corpus_courses=(project or {}).get("corpus_courses"),
         memory=projects.memory_ids(slug),
+        reuse=projects.reuse_cache(slug),
     )
     # Remember chunks that grounded a topical answer (not refusals or summaries).
     if result.source in ("project", "corpus") and not rag._is_meta_question(question):

@@ -1,6 +1,6 @@
 # BearLM — Project Context & Handoff
 
-_Last updated: 2026-09-30. This is the source-of-truth overview of what BearLM is,
+_Last updated: 2026-10-08. This is the source-of-truth overview of what BearLM is,
 how it's built, and everything you need to know to run, extend, or explain it._
 
 ---
@@ -13,8 +13,9 @@ plus a **Projects workspace** where users bring their own PDFs and hold grounded
 multi-turn conversations over them.
 
 Everything runs on the user's machine — **no API keys, no cloud** — behind a
-`BACKEND=local|openai` config flag. `local` is the default and primary path; the
-original `openai` path (OpenAI + MongoDB Atlas) is retained behind the flag for
+`BACKEND=local|openai` config flag. `local` is the primary path and the value
+`.env.example` sets; the code default in `config.py` is `openai`, so without a
+`.env` you must set `BACKEND=local` yourself. The original `openai` path (OpenAI + MongoDB Atlas) is retained behind the flag for
 comparison but is not the focus.
 
 Design goals: **grounded answers with citations, anti-hallucination, and a real
@@ -24,7 +25,7 @@ full-stack product** (web UI, analytics, evaluation), not just a script.
 
 ## 2. Stack
 
-| Concern | Local backend (default) | OpenAI backend (legacy, behind flag) |
+| Concern | Local backend (primary) | OpenAI backend (legacy, behind flag) |
 |---|---|---|
 | Orchestration | LangChain | raw OpenAI SDK |
 | Embeddings | Ollama `nomic-embed-text` (768-dim) | `text-embedding-3-small` (1536-dim) |
@@ -97,6 +98,8 @@ and served with `Cache-Control: no-cache`.
 - **Multiple multi-turn chats** per project (persistent history; whole conversation fed back as context; follow-ups resolve pronouns).
 - **Reset context** (clear chats and retrieval memory, keep PDFs).
 - **Retrieval memory**: chunk ids behind past answers (in `project.json`) are re-added to the rerank pool for follow-ups; they still must clear the gate.
+- **Near-repeat reuse**: opt-in, off by default (`NEAR_REPEAT_THRESHOLD=0`). Follow-ups are retrieved as `previous turn + follow-up`, which embeds up to 0.977 cosine from the previous turn, so no safe threshold separates them from true repeats (`eval/speed_experiments.json`). When set > 0, a question at least that cosine-similar to an earlier one in the same project reuses its retrieval and gate outcome (in-memory, dropped on reset / PDF or scope change).
+- **Stage timings**: `Answer.timings` records per-stage seconds (rewrite, search, rerank, generate, total).
 - **Per-project corpus scoping**: checkboxes choose which course subjects the project may fall back on (none = project-only).
 - **Stale-project prompt**: projects >1 week old prompt for deletion on open.
 
@@ -125,7 +128,7 @@ ollama pull nomic-embed-text     # 768-dim embeddings
 # 2. Python deps
 uv sync                          # (or: pip install -r requirements.txt)
 
-# 3. Configure (BACKEND=local is default; no keys needed)
+# 3. Configure (.env.example sets BACKEND=local; the config.py default is openai; local needs no keys)
 cp .env.example .env
 
 # 4. Ingest the corpus into Chroma
@@ -143,12 +146,16 @@ Pages: `/` (Ask), `/projects`, `/analytics`, `/api/docs` (FastAPI).
 ## 7. Config knobs (`config.py` / `.env`)
 
 `BACKEND` (local|openai) · `OLLAMA_BASE_URL/CHAT_MODEL/EMBED_MODEL/NUM_CTX` ·
-`CHROMA_DIR/COLLECTION` · `RETRIEVAL_K` · `RERANK_ENABLED/MODEL/CANDIDATES/TOP_N` ·
+`CHROMA_DIR/COLLECTION` · `RETRIEVAL_K` · `RERANK_ENABLED/MODEL/CANDIDATES/TOP_N`
+(true / `BAAI/bge-reranker-base` / 8 / 4) ·
 `RERANK_MIN_SCORE` (confidence gate, 0.02) · `HYBRID_SEARCH_ENABLED` (true) ·
 `RRF_K` (60) · `QUERY_REWRITE_ENABLED` (false; per-request override) ·
-`PROJECT_FALLBACK_TO_CORPUS` (true) · `PROJECT_MEMORY_SIZE/MERGE` (40/8; 0 disables) · `MIN_RELEVANCE` (reserved) ·
+`PROJECT_FALLBACK_TO_CORPUS` (true) · `PROJECT_MEMORY_SIZE/MERGE` (40/8; 0 disables) ·
+`NEAR_REPEAT_THRESHOLD` (0 = off; cosine for project near-repeat reuse) · `MIN_RELEVANCE` (reserved) ·
 `PROJECTS_DIR` · `UPLOADS_DIR` · `ANALYTICS_DB` ·
 OpenAI backend only: `OPENAI_API_KEY`, `MONGODB_URI`.
+`OLLAMA_BASE_URL` defaults to `http://127.0.0.1:11434`, not `localhost`: on this Windows machine every new
+connection to `localhost` costs ~2 s (likely IPv6 `::1` refused, then IPv4 fallback; Ollama binds 127.0.0.1).
 
 ---
 
@@ -189,24 +196,36 @@ eval/out/                 # eval artifacts (retrieval.json, answers.csv, ragas*.
 ## 10. Evaluation & results (`eval/`)
 
 - `generate_questions.py` — builds a **50-question benchmark from real chunks** (each question written from a chunk, so its `(course, section, chunk_id)` is exact gold).
-- `retrieval_eval.py` — **recall@1/3/5 + MRR ablation**: dense → hybrid → hybrid+rerank.
-- `answer_eval.py` — end-to-end answers + latency → CSV for manual grading (`--limit N`).
+- `retrieval_eval.py` — **recall@1/3/5 (id-level), precision@1/3/5 (page-level) and MRR ablation**: dense → hybrid → hybrid+rerank, plus a `gate` section (in-scope vs `OFF_TOPIC` top rerank scores against `RERANK_MIN_SCORE`, and known-hard probes such as "What is a B+ tree?").
+- `answer_eval.py` — automated answer metrics per question: refusal, citation correctness (inline `(course section)` cites that match a retrieved chunk), judge faithfulness/completeness (local llama3.1:8b, noisy), token counts and per-stage timings (`rewrite_s`, `search_s`, `rerank_s`, `generate_s`). Writes a CSV (`--limit N`, `--no-judge`).
 - `ragas_eval.py` — **RAGAS faithfulness + answer_relevancy** with a **local Ollama judge** (needs a small `langchain_community.chat_models.vertexai` shim; memory-heavy — run with `HYBRID_SEARCH_ENABLED=false RERANK_ENABLED=false` to lighten).
-- `report.py` — combined summary (retrieval ablation + latency/cost).
+- `report.py` — combined summary (retrieval, answer quality, latency, $/query); `--json` prints it as one JSON object (the metric suite: retrieval, answers incl. `uncited_rate` and stage medians/p95, cost per query).
+- `speed_experiments.py` — live speed experiments (`--stages`, `--rerank-sweep`, `--near-repeat`, `--decide` with fixed keep/reject criteria); results in `eval/speed_experiments.json`.
 
-**Measured (real):**
+Metric suite run (all `BACKEND=local`):
+```
+uv run python eval/retrieval_eval.py --out eval/out/metrics/retrieval.json
+uv run python eval/answer_eval.py --out eval/out/metrics/answers.csv     # delete the CSV first
+uv run python eval/report.py --out-dir eval/out/metrics --json
+```
+
+**Measured (real; 2026-10-08, n=50 generated questions, pool 8, bge-reranker-base, rewrite off):**
 
 | | dense | hybrid | hybrid + rerank |
 |---|---|---|---|
 | recall@1 | 0.56 | 0.60 | **0.82** |
-| recall@5 | 0.76 | 0.84 | **0.86** |
+| recall@5 | 0.76 | 0.86 | **0.86** |
+| precision@1 | 0.64 | 0.62 | **0.82** |
 | MRR | 0.64 | 0.70 | **0.84** |
-| RAGAS faithfulness | 0.55 | — | **0.83** |
-| RAGAS answer_relevancy | 0.80 | — | **0.97** |
 
-Answer latency (8 GB RTX 4060): median ~6 s, p95 ~26 s (first-call warmup).
-Cost: **$0/query** local. RAGAS runs are n=6 with a small local judge (defensible,
-but that's the caveat if pressed).
+Answers (n=50, judge on): refusal rate 0.02, faithfulness 0.83, completeness 0.88
+(self-graded by the same llama3.1:8b, so trends only), citation correctness 0.18,
+uncited rate 0.82 (most answers carry no inline `(course section)` cite).
+Latency (RTX 4060 for the LLM, CPU reranker, `OLLAMA_BASE_URL` 127.0.0.1; n=50, 2026-10-08): median 5.3 s,
+p95 9.9 s; stage medians search 0.11 s, rerank 1.94 s, generate 2.85 s, rewrite 0. Prompt ~1,730 tokens,
+output ~123 tokens. Cost: **$0/query** local API spend; OpenAI estimate $0.00033/query.
+Gate: 2/50 in-scope below 0.02, 5/10 off-topic at or above it. RAGAS (older, n=6):
+faithfulness 0.55 → 0.83 and answer_relevancy 0.80 → 0.97, dense vs hybrid+rerank.
 
 ---
 
@@ -217,31 +236,30 @@ but that's the caveat if pressed).
 - **RAGAS** pulls a heavy dep tree (langchain 1.x, langgraph, pandas, pyarrow, datasets) and is memory-intensive — the app still imports fine, but run RAGAS with other apps closed / hybrid+rerank off on 8 GB.
 - **Static assets** use `?v=N` + `no-cache`; bump `?v=` in the HTML when you must force a refetch.
 - **Adding a course**: drop files in `data/raw/<course>/`, re-run `bearlm.local_store`.
-- **Reranker/gate calibration**: bge scores are sigmoid [0,1]; off-topic ≈ 0.0, real matches ≥ ~0.04, so the gate is 0.02.
-- Root also has legacy docs: `DESIGN.md` (Cohere-inspired design system), `PROGRESS.md`, `README.md` (user-facing).
+- **Reranker/gate calibration**: bge scores are sigmoid [0,1] and the gate is 0.02. On this corpus the gate is leaky: 5 of the 10 off-topic probes in `_common.OFF_TOPIC` score ≥ 0.02 (top scores up to 0.68, e.g. Pride and Prejudice, basketball), while 2 of 50 in-scope questions fall below it (`retrieval_eval.py` `gate` section, n=50 + 10, 2026-10-08).
+- **The reranker runs on CPU**: the installed torch is a CPU build (`torch.cuda.is_available()` is False despite the RTX 4060), so bge reranking at 8 candidates takes a median 1.95 s per answer (p95 2.08 s; `--stages`, 20 questions, 2026-10-08), about 38% of a 5.1 s answer. A CUDA torch build is the likely win, but it is a dependency change and has not been made.
+- **Use `127.0.0.1`, not `localhost`, for Ollama.** Pooled connections drop after a few seconds idle, and reconnecting to `localhost` costs ~2 s on this Windows machine (probe: `embed_query` after 8 s idle took 2.08 s at `localhost` vs 0.04 s at 127.0.0.1, 4/4 samples; likely IPv6 fallback). `rag._get_llm()` builds a new `ChatOllama` per call, so every generation and judge call paid it too: every new connection pays ~2.2 s even with no idle gap (judge probe: a one-word chat took 2.57 s at `localhost` vs 0.37 s at 127.0.0.1, n=4). With the 127.0.0.1 default, in-answer search went 2.15 → 0.09 s and generate 4.83 → 2.66 s (stage medians, n=20, 2026-10-08).
+- Root docs: this file (how it works now), `PROGRESS.md` (append-only running log of changes and measurements), `README.md` (user-facing), `DESIGN.md` (legacy Cohere-inspired design system).
 
 ---
 
-## 12. Change history (newest first)
+## 12. History
 
-- **c0df613** Rich answer formatting — code blocks, LaTeX, Markdown tables (prompt + CSS + fence-unwrap).
-- **fbfe0f6 / 69471bd** Per-project corpus scoping (choose fallback subjects) + `no-cache` static + `?v=` cache-bust.
-- **27ad026** Prompt provenance (original vs optimized/rewritten shown with answers).
-- **5a7caeb / d044e9d / f39b91d** RAGAS eval (local judge) + recorded results.
-- **5fafb5b** Generated 50-Q benchmark + dense/hybrid/rerank recall/MRR ablation.
-- **36f3b36** Local SQLite analytics + most-asked area + auto practice questions.
-- **3da9eec** Hybrid search (BM25+dense RRF), query rewriting, prompt optimizer.
-- **b248082** Projects: remove/open PDFs + list/grid thumbnail views (fixed chunk-id collision).
-- **976620b** Projects: collapsible sidebar, multi-turn chats, reset context, stale-project prompt.
-- **8df1d2e** Fixed grounded gate over-refusing (threshold 0.1→0.02 + meta-question bypass).
-- **1201990 / 1a0fd34** Local RAG stack + Projects/uploads/anti-hallucination + docs.
-- **bb0cfcf** (and earlier) Original OpenAI + MongoDB Atlas era: Stage 4 ingestion → Stage 5 RAG → Streamlit → FastAPI web app + analytics (2,241 chunks, 6 courses).
+What changed, why, and what was measured, run by run: see `PROGRESS.md` (append-only running log).
 
 ---
 
 ## 13. Known gaps / possible next steps
 
-- **Answer-correctness grading** is still manual (RAGAS covers faithfulness/relevance; `answer_eval.py` exports a CSV for hand grading).
+Ranked by the metric suite (2026-10-08); retrieval shows no regression (recall@5 0.86, MRR 0.84).
+1. **GPU torch** (rerank median 1.94 s ≥ 1.5 s, 36% of the 5.3 s median): install a CUDA torch build so bge runs on the RTX 4060. Dependency change; needs the user's OK.
+2. **Answer-generation latency** (generate 2.85 s = 53% of the 5.3 s median): try `RERANK_TOP_N` 4 → 3, a lower `OLLAMA_NUM_CTX`, or streaming; measure each.
+3. **Gate recalibration** (5/10 off-topic ≥ 0.02): max off-topic is 0.68, and a gate there would drop 8/50 in-scope questions instead of 2, so a plain threshold change fails the "≤ 1 more in-scope refused" rule. Needs a better off-topic signal, not just a higher number.
+4. **Citation format** (uncited 0.82, citation correctness 0.18): change the prompt/context header format so the model cites `(course section)`.
+5. **BM25 tokenizer** for symbol terms (`B+`, `C++`): the "What is a B+ tree?" probe has no B+ tree chunk in the top 4.
+6. Faithfulness 0.83 and in-scope refusal 0.02 are within bounds; `PROJECT_MEMORY_SIZE` default (40) is still unproven (see PROGRESS.md run 2).
+
+Other:
 - **Deployment**: local models complicate PaaS; currently a local-run project (could containerize Ollama + app).
 - **Not implemented** (from the technique wishlist): LangSmith tracing (cloud; cuts against local ethos), LoRA/QLoRA fine-tuning, an MCP server.
 - Minor: `pyproject.toml` has a placeholder description and a dead `bearlm:main` script entry.

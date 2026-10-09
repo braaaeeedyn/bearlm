@@ -4,6 +4,7 @@ Also holds query rewriting, the prompt optimizer, and the grounded answer path
 (confidence gate + project-first fallback) used by projects and uploads.
 """
 
+import time
 from dataclasses import dataclass, field
 
 from openai import OpenAI
@@ -24,6 +25,14 @@ class Answer:
     source: str = "corpus"  # "project" | "upload" | "corpus" | "none"
     rewritten_query: str | None = None
     docs: list = field(default_factory=list, repr=False)  # exact context used (for eval)
+    timings: dict = field(default_factory=dict)  # per-stage seconds (local paths only)
+    reused: bool = False  # retrieval reused from a near-repeat question
+
+
+def _tick(timings, key, t0):
+    """Add the seconds since t0 to timings[key] (no-op when timings is None)."""
+    if timings is not None:
+        timings[key] = timings.get(key, 0.0) + time.perf_counter() - t0
 
 
 def retrieve(question, k=None):
@@ -113,17 +122,24 @@ def _get_llm():
     )
 
 
-def _retrieve_local(question, k=None):
+def _retrieve_local(question, k=None, timings=None):
     """Retrieve (hybrid BM25+dense when enabled, optionally reranked) for a question."""
     from . import search
 
     k = k or config.RETRIEVAL_K
+    t0 = time.perf_counter()
     if config.RERANK_ENABLED:
         from . import rerank
 
         cands = search.candidates(question, config.CHROMA_COLLECTION, config.RERANK_CANDIDATES)
-        return rerank.rerank(question, cands, config.RERANK_TOP_N)
-    return search.candidates(question, config.CHROMA_COLLECTION, k)
+        _tick(timings, "search_s", t0)
+        t0 = time.perf_counter()
+        docs = rerank.rerank(question, cands, config.RERANK_TOP_N)
+        _tick(timings, "rerank_s", t0)
+        return docs
+    docs = search.candidates(question, config.CHROMA_COLLECTION, k)
+    _tick(timings, "search_s", t0)
+    return docs
 
 
 def build_chain(k=None):
@@ -148,19 +164,27 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
+    start = time.perf_counter()
+    timings = {"rewrite_s": 0.0, "search_s": 0.0, "rerank_s": 0.0, "generate_s": 0.0}
     if rewrite is None:
         rewrite = config.QUERY_REWRITE_ENABLED
     rq = rewrite_query(question) if rewrite else question
+    if rewrite:
+        _tick(timings, "rewrite_s", start)
     rewritten = rq if (rewrite and rq != question) else None
-    docs = _retrieve_local(rq, k)
+    docs = _retrieve_local(rq, k, timings)
     if not docs:
-        return Answer("I don't know based on the course materials.", [], rewritten_query=rewritten)
+        _tick(timings, "total_s", start)
+        return Answer("I don't know based on the course materials.", [], rewritten_query=rewritten,
+                      timings=timings)
 
     prompt = ChatPromptTemplate.from_messages(
         [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
     )
     chain = prompt | _get_llm() | StrOutputParser()
+    t0 = time.perf_counter()
     text = chain.invoke({"context": _format_docs(docs), "question": question})
+    _tick(timings, "generate_s", t0)
 
     seen, citations = set(), []
     for d in docs:
@@ -173,7 +197,8 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
                 "section": m.get("section"),
                 "source": m.get("source"),
             })
-    return Answer(text, citations, rewritten_query=rewritten, docs=docs)
+    _tick(timings, "total_s", start)
+    return Answer(text, citations, rewritten_query=rewritten, docs=docs, timings=timings)
 
 
 def _dedupe_citations(docs):
@@ -217,7 +242,8 @@ def _is_meta_question(question: str) -> bool:
     return bool(_META_RE.search(question or ""))
 
 
-def _top_docs(question, collection_name, gated=True, allowed_courses=None, extra_ids=None):
+def _top_docs(question, collection_name, gated=True, allowed_courses=None, extra_ids=None,
+              timings=None):
     """Vector-retrieve a pool from one collection and rerank it.
 
     gated=True keeps only chunks clearing config.RERANK_MIN_SCORE (the confidence
@@ -229,6 +255,7 @@ def _top_docs(question, collection_name, gated=True, allowed_courses=None, extra
     """
     from . import rerank, search
 
+    t0 = time.perf_counter()
     cands = search.candidates(question, collection_name, config.RERANK_CANDIDATES, allowed_courses)
     if gated and extra_ids:
         from . import local_store
@@ -241,9 +268,12 @@ def _top_docs(question, collection_name, gated=True, allowed_courses=None, extra
             if search._doc_key(d) not in seen:
                 seen.add(search._doc_key(d))
                 cands.append(d)
+    _tick(timings, "search_s", t0)
     if not cands:
         return []
+    t0 = time.perf_counter()
     scored = rerank.rerank_scored(question, cands)
+    _tick(timings, "rerank_s", t0)
     if gated:
         scored = [(d, s) for d, s in scored if s >= config.RERANK_MIN_SCORE]
     return [d for d, _ in scored[: config.RERANK_TOP_N]]
@@ -318,7 +348,8 @@ def _make_retrieval_query(question, history, rewrite):
 
 
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None, memory=None):
+                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None, memory=None,
+                    reuse=None):
     """Grounded answer with a confidence gate, project-first fallback, and
     optional multi-turn conversation history.
 
@@ -328,6 +359,9 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     - Else refuse with config.GROUNDED_REFUSAL rather than guess.
     `history` is a list of prior {role, content} turns for conversational memory.
     `memory` is {collection: [chunk ids]} merged into the gated rerank pools.
+    `reuse` is a project's near-repeat cache of (query vector, docs, source): a
+    non-meta question within config.NEAR_REPEAT_THRESHOLD cosine of a cached one
+    reuses that entry's gated outcome (answer or refusal) and skips retrieval.
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     from langchain_core.output_parsers import StrOutputParser
@@ -337,26 +371,40 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
 
     from . import local_store
 
+    start = time.perf_counter()
+    timings = {"rewrite_s": 0.0, "reuse_s": 0.0, "search_s": 0.0, "rerank_s": 0.0, "generate_s": 0.0}
     if rewrite is None:
         rewrite = config.QUERY_REWRITE_ENABLED
     if rewrite:
         rq = rewrite_query(question, history)
         rewritten = rq if rq != question else None
+        _tick(timings, "rewrite_s", start)
     else:
         rq = _retrieval_query(question, history)
         rewritten = None
     docs, used = [], "none"
     meta = _is_meta_question(question)
 
-    if primary_collection:
+    vec, hit = None, None
+    if reuse is not None and config.NEAR_REPEAT_THRESHOLD > 0 and not meta:
+        t0 = time.perf_counter()
+        vec = local_store.get_embeddings().embed_query(rq)
+        best = max(reuse, key=lambda e: _cosine(vec, e[0]), default=None)
+        if best is not None and _cosine(vec, best[0]) >= config.NEAR_REPEAT_THRESHOLD:
+            hit = best
+        _tick(timings, "reuse_s", t0)
+
+    if hit is not None:
+        docs, used = list(hit[1]), hit[2]
+    elif primary_collection:
         if meta and local_store.collection_count(primary_collection) > 0:
             # "Summarize / what's in this doc" — answer from the doc's top chunks
             # without the confidence gate (which would wrongly refuse these).
-            docs = _top_docs(rq, primary_collection, gated=False)
+            docs = _top_docs(rq, primary_collection, gated=False, timings=timings)
             used = primary_label if docs else "none"
         else:
             docs = _top_docs(rq, primary_collection, gated=True,
-                             extra_ids=(memory or {}).get(primary_collection))
+                             extra_ids=(memory or {}).get(primary_collection), timings=timings)
             if docs:
                 used = primary_label
 
@@ -365,15 +413,21 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     # (corpus_courses == [] means "project docs only"). corpus_courses may also
     # restrict fallback to a subset of subjects.
     corpus_disabled = corpus_courses is not None and len(corpus_courses) == 0
-    if (not docs and (allow_fallback or not primary_collection)
+    if (hit is None and not docs and (allow_fallback or not primary_collection)
             and not (meta and primary_collection) and not corpus_disabled):
         docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True, allowed_courses=corpus_courses,
-                         extra_ids=(memory or {}).get(config.CHROMA_COLLECTION))
+                         extra_ids=(memory or {}).get(config.CHROMA_COLLECTION), timings=timings)
         if docs:
             used = "corpus"
 
+    if vec is not None and hit is None:
+        reuse.append((vec, list(docs), used))  # refusals too (docs=[], used="none")
+    reused = hit is not None
+
     if not docs:
-        return Answer(config.GROUNDED_REFUSAL, [], source="none", rewritten_query=rewritten)
+        _tick(timings, "total_s", start)
+        return Answer(config.GROUNDED_REFUSAL, [], source="none", rewritten_query=rewritten,
+                      timings=timings, reused=reused)
 
     system = (
         "You are BearLM, a grounded study assistant having a conversation. Answer "
@@ -394,8 +448,18 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
                     else AIMessage(content=content))
     msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
 
+    t0 = time.perf_counter()
     text = (_get_llm() | StrOutputParser()).invoke(msgs)
-    return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten, docs=docs)
+    _tick(timings, "generate_s", t0)
+    _tick(timings, "total_s", start)
+    return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten, docs=docs,
+                  timings=timings, reused=reused)
+
+
+def _cosine(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na, nb = sum(x * x for x in a) ** 0.5, sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
 
 
 def answer(question, k=None, rewrite=None):

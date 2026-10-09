@@ -15,7 +15,8 @@ the mean measured (tiktoken) token counts from answers.csv, falling back to the
 ASSUMED counts when no measurements exist.
 
 Run:
-    uv run python eval/report.py [--out-dir eval/out]
+    uv run python eval/report.py [--out-dir eval/out] [--json]
+--json prints the same summary (plus stage timings and uncited rate) as one JSON object.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import csv
 import json
 import statistics
 from pathlib import Path
+
+import _common  # eval/ is on sys.path when run as a script
 
 OUT = Path(__file__).resolve().parent / "out"
 
@@ -100,12 +103,47 @@ def fmt(x, spec="{:.3f}") -> str:
 
 
 RETR_CONFIGS = ("dense", "hybrid", "hybrid+rerank")
+STAGE_COLS = ("rewrite_s", "search_s", "rerank_s", "generate_s")
+
+
+def _med_p95(xs: list[float]) -> dict:
+    return {"median": statistics.median(xs) if xs else None, "p95": _p95(xs) if xs else None}
+
+
+def summary_json(out_dir: Path) -> dict:
+    """The summary as one JSON-able dict; None for anything not measured."""
+    answers = {}
+    for backend, rows in load_answers(out_dir).items():
+        answered = [r for r in rows if r.get("refused") == "0"]
+        prompt, output = _mean(_floats(rows, "prompt_tokens")), _mean(_floats(rows, "output_tokens"))
+        oai = openai_cost_per_query(prompt, output)
+        answers[backend] = {
+            "n": len(rows),
+            "refusal_rate": _mean(_floats(rows, "refused")),
+            "faithfulness": _mean(_floats(rows, "faithfulness")),
+            "completeness": _mean(_floats(rows, "completeness")),
+            "citation_correctness": _mean(_floats(rows, "citation_correctness")),
+            "uncited_rate": (sum(1 for r in answered if not _common.cited_refs(r.get("answer")))
+                             / len(answered)) if answered else None,
+            "latency_s": _med_p95(_floats(rows, "latency_s")),
+            "stages_s": {k: _med_p95(_floats(rows, k)) for k in STAGE_COLS},
+            "prompt_tokens_mean": prompt,
+            "output_tokens_mean": output,
+            "cost_per_query_usd": oai if backend == "openai" else 0.0,
+            "openai_cost_per_query_usd_est": oai,
+        }
+    return {"retrieval": load_retrieval(out_dir), "answers": answers}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-dir", default=str(OUT))
-    out_dir = Path(ap.parse_args().out_dir)
+    ap.add_argument("--json", action="store_true", help="print the summary as one JSON object")
+    args = ap.parse_args()
+    out_dir = Path(args.out_dir)
+    if args.json:
+        print(json.dumps(summary_json(out_dir)))
+        return
     retr = load_retrieval(out_dir)
     answers = load_answers(out_dir)
     lat = {b: _floats(rows, "latency_s") for b, rows in answers.items()}

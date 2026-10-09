@@ -9,6 +9,8 @@ automatic answer metrics computed on the exact context the answer was built from
                             Noisy LLM estimates, not ground truth. Skipped for
                             refusals and with --no-judge.
   - prompt_tokens, output_tokens : tiktoken counts (report.py prices OpenAI from these)
+  - rewrite_s, search_s, rerank_s, generate_s : per-stage seconds from Answer.timings
+                            (blank when missing, e.g. the openai path, or on error)
 The grade/notes columns stay blank for optional hand grading
 (grade = correct | partial | wrong | hallucinated).
 
@@ -42,11 +44,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common  # noqa: E402
 
+STAGE_FIELDS = ("rewrite_s", "search_s", "rerank_s", "generate_s")  # from Answer.timings
 FIELDS = [
     "backend", "question", "gold_course", "gold_section",
     "answer", "citations", "latency_s",
     "refused", "citation_correctness", "faithfulness", "completeness",
     "prompt_tokens", "output_tokens",
+    *STAGE_FIELDS,
     "grade",  # <- fill by hand: correct | partial | wrong | hallucinated
     "notes",
 ]
@@ -144,9 +148,9 @@ def run_one_backend(out_path: Path, questions_path: str | None = None, limit: in
             t0 = time.perf_counter()
             try:
                 res = rag.answer(q["question"])
-                answer_text, cites, docs = res.text, res.citations, res.docs
+                answer_text, cites, docs, timings = res.text, res.citations, res.docs, res.timings
             except Exception as e:  # log the failure rather than aborting the run
-                answer_text, cites, docs = f"[ERROR] {type(e).__name__}: {e}", [], []
+                answer_text, cites, docs, timings = f"[ERROR] {type(e).__name__}: {e}", [], [], {}
             latency = time.perf_counter() - t0
             contexts = [_common.doc_text(d) for d in docs]
             refused = _common.is_refusal(answer_text)
@@ -169,6 +173,7 @@ def run_one_backend(out_path: Path, questions_path: str | None = None, limit: in
                 "prompt_tokens": len(enc.encode(
                     rag._STRICT_SYSTEM + "\n\n".join(contexts) + q["question"])),
                 "output_tokens": len(enc.encode(answer_text)),
+                **{k: _fmt(timings.get(k)) for k in STAGE_FIELDS},
                 "grade": "",
                 "notes": "",
             })

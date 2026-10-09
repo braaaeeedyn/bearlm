@@ -125,3 +125,29 @@ def citation_correctness(text: str, docs) -> float | None:
         return 0.0
     have = {_norm_ref(m.get("course"), m.get("section")) for m in metas}
     return sum(1 for r in refs if r in have) / len(refs)
+
+
+OFF_TOPIC = [
+    "What is the capital of France?",
+    "Who won the 2018 FIFA World Cup?",
+    "Give me a recipe for banana bread.",
+    "What is the best time of year to visit Japan?",
+    "How do I change a flat tire on a bicycle?",
+    "Who wrote the novel Pride and Prejudice?",
+    "What are the symptoms of the common cold?",
+    "How many players are on a basketball team?",
+    "What is the plot of the movie Titanic?",
+    "How do I train my puppy to sit?",
+]
+
+
+def gate_stats(in_scope_tops, off_topic_tops, min_score) -> dict:
+    """How the rerank confidence gate (keep if top score >= min_score) splits
+    in-scope vs off-topic questions, from each question's top rerank score."""
+    return {
+        "min_score": min_score,
+        "n_in_scope": len(in_scope_tops),
+        "in_scope_below_gate": sum(1 for s in in_scope_tops if s < min_score),
+        "n_off_topic": len(off_topic_tops),
+        "off_topic_at_or_above_gate": sum(1 for s in off_topic_tops if s >= min_score),
+    }

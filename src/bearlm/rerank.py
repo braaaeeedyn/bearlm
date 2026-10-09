@@ -1,6 +1,6 @@
 """Cross-encoder reranking (Phase 4) — BACKEND == "local".
 
-Retrieve a wide candidate set (config.RERANK_CANDIDATES, default 15), score each
+Retrieve a wide candidate set (config.RERANK_CANDIDATES, default 8), score each
 (query, passage) pair with a CrossEncoder (BAAI/bge-reranker-base), and keep the
 top N (config.RERANK_TOP_N, default 4). Toggled by config.RERANK_ENABLED so the
 pipeline can be measured with and without it.

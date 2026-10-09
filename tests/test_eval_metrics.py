@@ -52,3 +52,10 @@ def test_parse_judge():
     assert parse_judge("{not json}") == none
     assert parse_judge('{"faithfulness": "high"}') == none
     assert parse_judge(None) == none
+
+
+def test_gate_stats():
+    got = _common.gate_stats([0.9, 0.02, 0.01, 0.5], [0.0, 0.02, 0.3], 0.02)
+    assert got == {"min_score": 0.02, "n_in_scope": 4, "in_scope_below_gate": 1,
+                   "n_off_topic": 3, "off_topic_at_or_above_gate": 2}  # 0.02 == gate counts as >=
+    assert _common.gate_stats([], [], 0.5)["off_topic_at_or_above_gate"] == 0
