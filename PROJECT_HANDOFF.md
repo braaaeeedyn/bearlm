@@ -1,8 +1,10 @@
 # BearLM — Project Context & Handoff
 
-_Last updated: 2026-10-09. How BearLM works **now**: what it is, how it's built,
-and what you need to run, extend or explain it. For what changed and why over
-time, see `PROGRESS.md`._
+_Last updated: 2026-10-09 (code at commit b124165). **This file is the current
+state**: how BearLM works now, what it is, how it's built, and what you need to
+run, extend or explain it. It is rewritten in place when anything changes.
+`PROGRESS.md` is the history (what changed, why, and what was measured);
+`README.md` is setup for anyone who clones the repo._
 
 ---
 
@@ -148,7 +150,7 @@ See `README.md` "Setup" for the full first-time steps. In short:
 ```bash
 ollama pull nomic-embed-text && ollama pull llama3.1:8b
 uv sync
-uv run python -m bearlm.local_store       # build ./db from data/corpus_chunks.jsonl.gz (few minutes)
+uv run python -m bearlm.local_store       # build ./db from data/corpus_chunks.jsonl.gz (~3.5 min on the RTX 4060)
 uv run uvicorn bearlm.api:app             # http://localhost:8000
 ```
 

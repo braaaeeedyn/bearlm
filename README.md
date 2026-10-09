@@ -65,8 +65,9 @@ machine into a local Chroma store in `./db`:
 ```bash
 uv run python -m bearlm.local_store
 ```
-It takes a few minutes and prints the stored count at the end (expect
-`vector_count = 10394`, `vector_dim = 768`).
+It takes about 3–4 minutes on a GPU (measured: 208 s on an RTX 4060; longer on
+CPU) and prints the stored count at the end (expect `vector_count = 10394`,
+`vector_dim = 768`).
 
 ### 6. Run it
 ```bash
@@ -216,5 +217,10 @@ data/corpus_chunks.jsonl.gz   # the course text chunks (public); PDFs are not in
 tests/               # offline pytest suite
 ```
 
-**Docs:** `PROJECT_HANDOFF.md` describes how the app works now;
-`PROGRESS.md` is the full history of what changed and why.
+## Docs
+
+| File | What it's for |
+|---|---|
+| `README.md` (this file) | Setup and usage for anyone who clones the repo. |
+| `PROJECT_HANDOFF.md` | **Current state**: how the app works right now (architecture, features, config, endpoints, results, roadmap). Rewritten in place when something changes; removed things are deleted. |
+| `PROGRESS.md` | **History**: an append-only log of every change, why it was made, what was measured and what was decided. |
