@@ -237,7 +237,7 @@ def test_rerank_config_honoured(monkeypatch):
 
     built = []
     fake = types.ModuleType("sentence_transformers")
-    fake.CrossEncoder = lambda name: built.append(name) or object()
+    fake.CrossEncoder = lambda name, **kw: built.append(name) or object()
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
     monkeypatch.setattr(config, "RERANK_MODEL", "some/other-reranker")
     rerank._cross_encoder.cache_clear()

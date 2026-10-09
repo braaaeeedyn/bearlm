@@ -19,7 +19,8 @@ from langchain_core.documents import Document
 from . import config
 
 _bm25_cache: dict[str, tuple[int, object, list[Document]]] = {}
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Keeps a trailing +, ++ or # (b+, c++, c#) unless an alphanumeric follows (x+1, a+b).
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:\+\+|\+|#)?(?![a-z0-9])|[a-z0-9]+")
 
 
 def _tokenize(text: str) -> list[str]:

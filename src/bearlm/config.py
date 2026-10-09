@@ -39,6 +39,9 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "llama3.1:8b")  # qwen2.5:3b if <8GB VRAM
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+# Longest legit answer seen was 815 tokens; 1024 adds ~25% headroom and bounds a runaway to ~31 s.
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
+OLLAMA_TIMEOUT_S = float(os.environ.get("OLLAMA_TIMEOUT_S", "120"))  # httpx stall timeout (connect / next chunk)
 LOCAL_EMBEDDING_DIM = 768
 
 CHROMA_DIR = os.environ.get("CHROMA_DIR", str(_ROOT / "db"))
@@ -51,8 +54,10 @@ RERANK_ENABLED = os.environ.get("RERANK_ENABLED", "true").strip().lower() in ("1
 RERANK_MODEL = os.environ.get("RERANK_MODEL", "BAAI/bge-reranker-base")
 RERANK_CANDIDATES = int(os.environ.get("RERANK_CANDIDATES", "8"))
 RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "4"))
-# Confidence gate: bge relevance below this is dropped. Off-topic scores ~0.0,
-# real matches >= ~0.04, so 0.02 keeps real matches and filters noise.
+# "auto" = cuda if torch sees a GPU, else cpu; or force "cpu" / "cuda".
+RERANK_DEVICE = os.environ.get("RERANK_DEVICE", "auto").strip().lower()
+# Confidence gate (projects/uploads only): real matches mostly score >= 0.02, but off-topic
+# probes are not reliably below it (5/10 >= 0.02, max 0.68); kept as is by decision.
 RERANK_MIN_SCORE = float(os.environ.get("RERANK_MIN_SCORE", "0.02"))
 
 # --- Hybrid search (BM25 + dense, fused with reciprocal rank fusion) ---

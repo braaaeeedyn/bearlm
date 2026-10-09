@@ -155,3 +155,58 @@ def test_docs_quote_reproducible_quality():
         assert "citation correctness 0.20" not in doc and "faithfulness 0.84" not in doc
         assert "0.18" in doc
     assert "5.3 s" in handoff and "5.4 s" not in handoff
+
+
+def _last_entry():
+    return re.split(r"^## ", _read("PROGRESS.md"), flags=re.M)[-1]
+
+
+def test_run5_recorded():
+    last = _last_entry()
+    assert "Run 5" in last
+    for label in ("**What changed:**", "**Why:**", "**Measured:**", "**Decision:**"):
+        assert label in last, label
+    assert "**Variance finding:**" in last and "0.8347" in last and "0.841" in last
+    assert "B+" in last and "citation" in last.lower() and "gate" in last.lower()
+    assert "RERANK_DEVICE" in last or "torch" in last
+
+
+def test_gate_described_honestly():
+    assert "Off-topic scores ~0.0" not in (ROOT / "src" / "bearlm" / "config.py").read_text(encoding="utf-8")
+    handoff = _read("PROJECT_HANDOFF.md")
+    assert "Gate recalibration" not in handoff
+    s5 = re.search(r"^## 5\..*?(?=^## )", handoff, re.M | re.S).group(0)
+    para = s5[s5.index("**Anti-hallucination**"):].split("\n\n")[0]
+    assert "rag.answer" in para or "Ask page" in para
+    assert re.search(r"not gated|no (confidence )?gate", para)
+
+
+def test_gpu_decision_consistent():
+    handoff = _read("PROJECT_HANDOFF.md")
+    if "download.pytorch.org" in _read("pyproject.toml"):
+        assert "+cu130" in _read("uv.lock")
+        assert "installed torch is a CPU build" not in handoff
+        assert "RERANK_DEVICE" in handoff
+    else:
+        assert "revert" in _last_entry().lower()
+        assert "reranker runs on CPU" in handoff
+
+
+def test_output_cap_documented():
+    handoff = _read("PROJECT_HANDOFF.md")
+    assert "OLLAMA_NUM_PREDICT" in _read("README.md") and "OLLAMA_NUM_PREDICT" in handoff
+    assert "No output-token cap" not in handoff
+    last = _last_entry()
+    assert "num_predict" in last and "1024" in last
+
+
+def test_revision2_env_and_timeout_docs():
+    values = dict(re.findall(r"^([A-Z_]+)=(\S*)", _read(".env.example"), re.M))
+    assert int(values["OLLAMA_NUM_PREDICT"]) == config.OLLAMA_NUM_PREDICT
+    assert float(values["OLLAMA_TIMEOUT_S"]) == config.OLLAMA_TIMEOUT_S
+    assert values["RERANK_DEVICE"] == config.RERANK_DEVICE
+    handoff = _read("PROJECT_HANDOFF.md")
+    for doc in (_read("README.md"), handoff):
+        assert "per-request timeout" not in doc.lower()
+    assert "slightly overstates" not in handoff
+    assert "0.19" in handoff and "0.19" in _last_entry()

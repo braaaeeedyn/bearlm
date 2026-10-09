@@ -4,13 +4,16 @@ For each question it records: backend, question, answer, citations, latency, and
 automatic answer metrics computed on the exact context the answer was built from:
   - refused               : 1 if the answer is the "I don't know based on the ..." refusal
   - citation_correctness  : share of inline (course section) citations that match a
-                            retrieved chunk (blank for refusals, 0 if uncited)
+                            retrieved chunk (blank for refusals and [ERROR] rows, 0 if uncited)
   - faithfulness, completeness : 0..1 from the LOCAL llama3.1:8b judge (judge_answer).
                             Noisy LLM estimates, not ground truth. Skipped for
-                            refusals and with --no-judge.
+                            refusals, [ERROR] rows and with --no-judge.
   - prompt_tokens, output_tokens : tiktoken counts (report.py prices OpenAI from these)
+  - context_ids           : ;-joined chunk_id of each context doc (provenance)
   - rewrite_s, search_s, rerank_s, generate_s : per-stage seconds from Answer.timings
                             (blank when missing, e.g. the openai path, or on error)
+Each run also (over)writes <out>.meta.json: Chroma dir + count, questions sha256,
+config, judge flag, Ollama /api/ps VRAM split and GPU/torch state (best-effort).
 The grade/notes columns stay blank for optional hand grading
 (grade = correct | partial | wrong | hallucinated).
 
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -50,6 +54,7 @@ FIELDS = [
     "answer", "citations", "latency_s",
     "refused", "citation_correctness", "faithfulness", "completeness",
     "prompt_tokens", "output_tokens",
+    "context_ids",  # ;-joined chunk_id of each context doc (provenance)
     *STAGE_FIELDS,
     "grade",  # <- fill by hand: correct | partial | wrong | hallucinated
     "notes",
@@ -118,6 +123,94 @@ def _gold_text(q: dict) -> str | None:
         return None
 
 
+def _ollama_ps():
+    """Resident Ollama models with their VRAM split, or None on any error."""
+    import urllib.request
+
+    from bearlm import config
+
+    try:
+        with urllib.request.urlopen(f"{config.OLLAMA_BASE_URL}/api/ps", timeout=3) as r:
+            models = json.load(r).get("models") or []
+        return [{k: m.get(k) for k in ("name", "size", "size_vram")} for m in models]
+    except Exception:
+        return None
+
+
+def _nvidia_smi():
+    """(used_mb, total_mb) of GPU 0 from nvidia-smi, or (None, None)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                              "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10).stdout
+        used, total = out.splitlines()[0].split(",")
+        return int(used), int(total)
+    except Exception:
+        return None, None
+
+
+def _gpu_info() -> dict:
+    out = {"torch_version": None, "cuda_available": None, "rerank_device": None,
+           "torch_cuda_max_reserved_mb": None}
+    try:
+        import torch
+
+        out["torch_version"] = torch.__version__
+        out["cuda_available"] = torch.cuda.is_available()
+        if out["cuda_available"]:
+            out["torch_cuda_max_reserved_mb"] = round(torch.cuda.max_memory_reserved() / 2**20, 1)
+    except Exception:
+        pass
+    try:
+        from bearlm import rerank
+
+        if rerank._cross_encoder.cache_info().currsize:
+            out["rerank_device"] = str(rerank._cross_encoder().device)
+    except Exception:
+        pass
+    out["nvidia_smi_used_mb"], out["nvidia_smi_total_mb"] = _nvidia_smi()
+    return out
+
+
+_META_CONFIG = ("BACKEND", "OLLAMA_BASE_URL", "OLLAMA_CHAT_MODEL", "OLLAMA_EMBED_MODEL",
+                "OLLAMA_NUM_CTX", "RERANK_ENABLED", "RERANK_MODEL", "RERANK_CANDIDATES",
+                "RERANK_TOP_N", "RERANK_MIN_SCORE", "HYBRID_SEARCH_ENABLED", "RRF_K",
+                "QUERY_REWRITE_ENABLED", "RERANK_DEVICE")
+
+
+def write_run_meta(out_path: Path, questions_path, n_rows: int, judge: bool) -> None:
+    """Best-effort sidecar <out>.meta.json: which store, config and VRAM split produced
+    the CSV. Never raises."""
+    try:
+        from bearlm import config
+
+        meta = {"chroma_dir": str(Path(config.CHROMA_DIR).resolve()),
+                "collection": config.CHROMA_COLLECTION, "collection_count": None,
+                "questions_path": str(questions_path), "questions_sha256": None,
+                "n_rows": n_rows,
+                "config": {k: getattr(config, k) for k in _META_CONFIG if hasattr(config, k)},
+                "judge": judge}
+        try:
+            from bearlm import local_store
+
+            meta["collection_count"] = local_store.get_vectorstore()._collection.count()
+        except Exception:
+            pass
+        try:
+            qp = Path(questions_path) if questions_path else _common.EVAL_DIR / "questions.jsonl"
+            meta["questions_sha256"] = hashlib.sha256(qp.read_bytes()).hexdigest()
+        except Exception:
+            pass
+        try:
+            meta["ollama_ps"] = _ollama_ps()
+        except Exception:
+            meta["ollama_ps"] = None
+        meta["gpu"] = _gpu_info()
+        out_path.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"run meta not written: {type(e).__name__}: {e}")
+
+
 def _fmt(x) -> str:
     return "" if x is None else f"{x:.3f}"
 
@@ -140,44 +233,52 @@ def run_one_backend(out_path: Path, questions_path: str | None = None, limit: in
         if header != FIELDS:
             sys.exit(f"{out_path} has a different header (older format). "
                      "Delete it or pass --out <new file>.")
-    with out_path.open("a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDS)
-        if new_file:
-            w.writeheader()
-        for q in questions:
-            t0 = time.perf_counter()
-            try:
-                res = rag.answer(q["question"])
-                answer_text, cites, docs, timings = res.text, res.citations, res.docs, res.timings
-            except Exception as e:  # log the failure rather than aborting the run
-                answer_text, cites, docs, timings = f"[ERROR] {type(e).__name__}: {e}", [], [], {}
-            latency = time.perf_counter() - t0
-            contexts = [_common.doc_text(d) for d in docs]
-            refused = _common.is_refusal(answer_text)
-            scores = {"faithfulness": None, "completeness": None}
-            if judge and not refused:
-                ref = _gold_text(q) if q.get("gold_chunk_ids") else None
-                scores = judge_answer(q["question"], answer_text, contexts, ref)
-            w.writerow({
-                "backend": config.BACKEND,
-                "question": q["question"],
-                "gold_course": q.get("gold_course", ""),
-                "gold_section": q.get("gold_section", ""),
-                "answer": answer_text,
-                "citations": "; ".join(f"{c['course']} {c['section']}" for c in cites),
-                "latency_s": f"{latency:.3f}",
-                "refused": int(refused),
-                "citation_correctness": _fmt(_common.citation_correctness(answer_text, docs)),
-                "faithfulness": _fmt(scores["faithfulness"]),
-                "completeness": _fmt(scores["completeness"]),
-                "prompt_tokens": len(enc.encode(
-                    rag._STRICT_SYSTEM + "\n\n".join(contexts) + q["question"])),
-                "output_tokens": len(enc.encode(answer_text)),
-                **{k: _fmt(timings.get(k)) for k in STAGE_FIELDS},
-                "grade": "",
-                "notes": "",
-            })
-            print(f"[{config.BACKEND}] {latency:6.2f}s  {q['question'][:60]}")
+    n_rows = 0
+    try:
+        with out_path.open("a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=FIELDS)
+            if new_file:
+                w.writeheader()
+            for q in questions:
+                t0 = time.perf_counter()
+                try:
+                    res = rag.answer(q["question"])
+                    answer_text, cites, docs, timings = res.text, res.citations, res.docs, res.timings
+                except Exception as e:  # log the failure rather than aborting the run
+                    answer_text, cites, docs, timings = f"[ERROR] {type(e).__name__}: {e}", [], [], {}
+                latency = time.perf_counter() - t0
+                contexts = [_common.doc_text(d) for d in docs]
+                refused = _common.is_refusal(answer_text)
+                errored = answer_text.startswith("[ERROR]")  # infra failure (e.g. Ollama OOM): not scored
+                scores = {"faithfulness": None, "completeness": None}
+                if judge and not refused and not errored:
+                    ref = _gold_text(q) if q.get("gold_chunk_ids") else None
+                    scores = judge_answer(q["question"], answer_text, contexts, ref)
+                w.writerow({
+                    "backend": config.BACKEND,
+                    "question": q["question"],
+                    "gold_course": q.get("gold_course", ""),
+                    "gold_section": q.get("gold_section", ""),
+                    "answer": answer_text,
+                    "citations": "; ".join(f"{c['course']} {c['section']}" for c in cites),
+                    "latency_s": f"{latency:.3f}",
+                    "refused": int(refused),
+                    "citation_correctness": "" if errored else _fmt(_common.citation_correctness(answer_text, docs)),
+                    "faithfulness": _fmt(scores["faithfulness"]),
+                    "completeness": _fmt(scores["completeness"]),
+                    "prompt_tokens": len(enc.encode(
+                        rag._STRICT_SYSTEM + "\n\n".join(contexts) + q["question"])),
+                    "output_tokens": len(enc.encode(answer_text)),
+                    "context_ids": ";".join(_common.doc_meta(d).get("chunk_id") or "" for d in docs),
+                    **{k: _fmt(timings.get(k)) for k in STAGE_FIELDS},
+                    "grade": "",
+                    "notes": "",
+                })
+                f.flush()  # keep finished rows if the run is killed
+                n_rows += 1
+                print(f"[{config.BACKEND}] {latency:6.2f}s  {q['question'][:60]}")
+    finally:  # a killed or crashed run still records what produced its rows
+        write_run_meta(out_path, questions_path, n_rows, judge)
     print(f"Appended {config.BACKEND} rows to {out_path}")
 
 

@@ -81,3 +81,25 @@ def test_report_json_metrics(tmp_path):
     assert local["latency_s"]["median"] == 2.5
     assert local["cost_per_query_usd"] == 0.0
     assert local["openai_cost_per_query_usd_est"] > 0
+
+
+def test_report_json_run_meta_and_tok_rate(tmp_path):
+    base = {"backend": "local", "refused": "0", "latency_s": "3.0", "answer": "a"}
+    rows = [{**base, "question": "q1", "output_tokens": "100", "generate_s": "2.000"},   # 50 tok/s
+            {**base, "question": "q2", "output_tokens": "120", "generate_s": "3.000"},   # 40 tok/s
+            {**base, "question": "q3", "output_tokens": "90", "generate_s": "1.000"},    # 90 tok/s
+            {**base, "question": "q4", "output_tokens": "10", "generate_s": "0.000"}]    # skipped
+    with (tmp_path / "answers.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=answer_eval.FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+    meta = {"chroma_dir": "C:/db", "ollama_ps": [{"name": "llama3.1:8b", "size": 5, "size_vram": 5}]}
+    (tmp_path / "answers.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    res = subprocess.run([sys.executable, "eval/report.py", "--out-dir", str(tmp_path), "--json"],
+                         cwd=ROOT, env={**os.environ, "BACKEND": "local"},
+                         capture_output=True, text=True, encoding="utf-8")
+    assert res.returncode == 0, res.stderr
+    data = json.loads(res.stdout)
+    assert data["run_meta"] == meta
+    assert data["answers"]["local"]["generate_tok_per_s"]["median"] == 50.0

@@ -6,22 +6,44 @@ top N (config.RERANK_TOP_N, default 4). Toggled by config.RERANK_ENABLED so the
 pipeline can be measured with and without it.
 
 The model is a sentence-transformers CrossEncoder, downloaded from Hugging Face
-on first use (independent of Ollama).
+on first use (independent of Ollama). It runs on config.RERANK_DEVICE: "auto"
+picks cuda when torch sees a GPU, else cpu. On cuda it loads in fp16 (~0.55 GB
+VRAM next to the Ollama model) and falls back to cpu if loading fails (e.g. OOM).
 """
 
 from __future__ import annotations
 
 import functools
+import logging
 from typing import Any
 
 from . import config
 
+log = logging.getLogger(__name__)
+
+
+def _device() -> str:
+    if config.RERANK_DEVICE != "auto":
+        return config.RERANK_DEVICE
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
 
 @functools.lru_cache(maxsize=1)
 def _cross_encoder():
-    from sentence_transformers import CrossEncoder  # lazy: heavy import (torch)
+    import torch  # lazy: heavy import
+    from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(config.RERANK_MODEL)
+    dev = _device()
+    if dev.startswith("cuda"):
+        try:
+            return CrossEncoder(config.RERANK_MODEL, device=dev,
+                                model_kwargs={"torch_dtype": torch.float16})
+        except RuntimeError as e:  # includes torch.OutOfMemoryError
+            log.warning("reranker failed to load on %s (%s); using cpu", dev, e)
+            dev = "cpu"
+    return CrossEncoder(config.RERANK_MODEL, device=dev)
 
 
 def _text_of(doc: Any) -> str:

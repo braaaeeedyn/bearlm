@@ -16,7 +16,8 @@ ASSUMED counts when no measurements exist.
 
 Run:
     uv run python eval/report.py [--out-dir eval/out] [--json]
---json prints the same summary (plus stage timings and uncited rate) as one JSON object.
+--json prints the same summary (plus stage timings, generate tokens/s, uncited rate and
+the answers.meta.json sidecar as run_meta) as one JSON object.
 """
 
 from __future__ import annotations
@@ -110,11 +111,25 @@ def _med_p95(xs: list[float]) -> dict:
     return {"median": statistics.median(xs) if xs else None, "p95": _p95(xs) if xs else None}
 
 
+def _tok_rates(rows: list[dict]) -> list[float]:
+    """Per-row output_tokens / generate_s over rows with generate_s > 0."""
+    out = []
+    for row in rows:
+        try:
+            tok, gen = float(row["output_tokens"]), float(row["generate_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if gen > 0:
+            out.append(tok / gen)
+    return out
+
+
 def summary_json(out_dir: Path) -> dict:
     """The summary as one JSON-able dict; None for anything not measured."""
     answers = {}
     for backend, rows in load_answers(out_dir).items():
-        answered = [r for r in rows if r.get("refused") == "0"]
+        answered = [r for r in rows if r.get("refused") == "0"
+                    and not (r.get("answer") or "").startswith("[ERROR]")]
         prompt, output = _mean(_floats(rows, "prompt_tokens")), _mean(_floats(rows, "output_tokens"))
         oai = openai_cost_per_query(prompt, output)
         answers[backend] = {
@@ -127,12 +142,15 @@ def summary_json(out_dir: Path) -> dict:
                              / len(answered)) if answered else None,
             "latency_s": _med_p95(_floats(rows, "latency_s")),
             "stages_s": {k: _med_p95(_floats(rows, k)) for k in STAGE_COLS},
+            "generate_tok_per_s": _med_p95(_tok_rates(rows)),
             "prompt_tokens_mean": prompt,
             "output_tokens_mean": output,
             "cost_per_query_usd": oai if backend == "openai" else 0.0,
             "openai_cost_per_query_usd_est": oai,
         }
-    return {"retrieval": load_retrieval(out_dir), "answers": answers}
+    meta = out_dir / "answers.meta.json"
+    run_meta = json.loads(meta.read_text(encoding="utf-8")) if meta.exists() else None
+    return {"retrieval": load_retrieval(out_dir), "answers": answers, "run_meta": run_meta}
 
 
 def main() -> None:

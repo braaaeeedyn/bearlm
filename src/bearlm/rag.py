@@ -4,6 +4,7 @@ Also holds query rewriting, the prompt optimizer, and the grounded answer path
 (confidence gate + project-first fallback) used by projects and uploads.
 """
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -86,6 +87,12 @@ def build_prompt(question, chunks):
 
 _client = OpenAI() if config.BACKEND == "openai" else None
 
+_CITE_RULE = (
+    "Cite sources inline as (course section), copying a source's header, e.g. "
+    "(cs188 p.80), after the claims it supports; separate several with \"; \". "
+    "Use parentheses, never brackets, and never cite a source that is not in the context. "
+)
+
 _STRICT_SYSTEM = (
     "You are BearLM, a study assistant for UC Berkeley CS/DS courses. "
     "Answer the question using ONLY the provided context. "
@@ -93,8 +100,8 @@ _STRICT_SYSTEM = (
     "say briefly what is missing. Only if the context contains nothing relevant "
     "to the question, reply with exactly: "
     "\"I don't know based on the course materials.\" "
-    "Cite sources inline as (course section). "
-    "Format for a Markdown renderer. Use fenced code blocks ONLY for actual code, "
+    + _CITE_RULE
+    + "Format for a Markdown renderer. Use fenced code blocks ONLY for actual code, "
     "tagged with the language (```python, ```sql). Write math in LaTeX (inline "
     "$...$, display $$...$$). Present tabular or relational data as a Markdown "
     "table written directly in the response — never wrap tables or the whole "
@@ -103,12 +110,44 @@ _STRICT_SYSTEM = (
 
 
 def _format_docs(docs):
-    """Render retrieved LangChain Documents into the tagged context block."""
+    """Render retrieved Documents as context blocks headed by their citable form."""
     out = []
     for d in docs:
         m = d.metadata or {}
-        out.append(f"[{m.get('course', '?')} {m.get('section', '?')}] {d.page_content}")
+        out.append(f"Source ({m.get('course', '?')} {m.get('section', '?')}):\n{d.page_content}")
     return "\n\n".join(out)
+
+
+# A [..] group (not a markdown link) or a (..) group on one line, up to ~120 chars.
+_CITE_GROUP_RE = re.compile(r"\[([^\[\]\n]{1,120})\](?!\()|\(([^()\n]{1,120})\)")
+_CITE_LABEL_RE = re.compile(r"^\s*(?:sources?|course section)\s*:\s*", re.IGNORECASE)
+
+
+def _normalize_citations(text, docs):
+    """Rewrite citation markers that name only context chunks into canonical
+    "(course section; course section)". Any group with a part that is not a context
+    ref stays byte-identical, so this never adds or invents a citation."""
+    refs = {}
+    for d in docs:
+        m = d.metadata or {}
+        if m.get("course") and m.get("section"):
+            sec = str(m["section"])
+            refs[(str(m["course"]).lower(), re.sub(r"\s+", "", sec).lower())] = f"{m['course']} {sec}"
+    if not refs or not text:
+        return text
+
+    def repl(match):
+        body = _CITE_LABEL_RE.sub("", match.group(1) if match.group(1) is not None else match.group(2))
+        out = []
+        for part in re.split(r"[;,]", body):
+            toks = part.split()
+            key = (toks[0].lower(), "".join(toks[1:]).lower()) if len(toks) >= 2 else None
+            if key not in refs:
+                return match.group(0)
+            out.append(refs[key])
+        return "(" + "; ".join(out) + ")"
+
+    return _CITE_GROUP_RE.sub(repl, text)
 
 
 def _get_llm():
@@ -118,8 +157,23 @@ def _get_llm():
         model=config.OLLAMA_CHAT_MODEL,
         temperature=0,
         num_ctx=config.OLLAMA_NUM_CTX,
+        num_predict=config.OLLAMA_NUM_PREDICT,
         base_url=config.OLLAMA_BASE_URL,
+        client_kwargs={"timeout": config.OLLAMA_TIMEOUT_S},
     )
+
+
+TRUNCATED_NOTE = "\n\n_(Answer cut off at the length limit.)_"
+
+
+def _finish(msg, docs):
+    """Normalize cites in a generated AIMessage; flag output cut off by num_predict."""
+    text = msg.content
+    if "I don't know based on the" not in text:
+        text = _normalize_citations(text, docs)
+    if (msg.response_metadata or {}).get("done_reason") == "length":
+        text += TRUNCATED_NOTE
+    return text
 
 
 def _retrieve_local(question, k=None, timings=None):
@@ -161,7 +215,6 @@ def build_chain(k=None):
 
 
 def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None) -> Answer
-    from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
 
     start = time.perf_counter()
@@ -181,10 +234,11 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
     prompt = ChatPromptTemplate.from_messages(
         [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
     )
-    chain = prompt | _get_llm() | StrOutputParser()
+    chain = prompt | _get_llm()
     t0 = time.perf_counter()
-    text = chain.invoke({"context": _format_docs(docs), "question": question})
+    msg = chain.invoke({"context": _format_docs(docs), "question": question})
     _tick(timings, "generate_s", t0)
+    text = _finish(msg, docs)
 
     seen, citations = set(), []
     for d in docs:
@@ -219,8 +273,6 @@ def _dedupe_citations(docs):
 # ---------------------------------------------------------------------------
 # GROUNDED ANSWERS with a confidence gate (projects + uploads, anti-hallucination)
 # ---------------------------------------------------------------------------
-
-import re
 
 # Meta/summary questions ("what is in this pdf", "summarize this") are topically
 # orthogonal to any single passage, so the cross-encoder scores them ~0 and the
@@ -364,7 +416,6 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     reuses that entry's gated outcome (answer or refusal) and skips retrieval.
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-    from langchain_core.output_parsers import StrOutputParser
 
     if allow_fallback is None:
         allow_fallback = config.PROJECT_FALLBACK_TO_CORPUS
@@ -435,8 +486,8 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
         "so far for reference). If the context is relevant but incomplete, answer "
         "with what it supports and say briefly what is missing. Only if the context "
         "contains nothing relevant to the question, reply with exactly: "
-        f"\"{config.GROUNDED_REFUSAL}\" Cite sources inline as "
-        "(course section). Format for a Markdown renderer: fenced code blocks ONLY "
+        f"\"{config.GROUNDED_REFUSAL}\" " + _CITE_RULE
+        + "Format for a Markdown renderer: fenced code blocks ONLY "
         "for actual code (```python, ```sql); math in LaTeX (inline $...$, display "
         "$$...$$); tabular or relational data as a Markdown table written directly, "
         "never wrapped in a code fence."
@@ -449,8 +500,9 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
 
     t0 = time.perf_counter()
-    text = (_get_llm() | StrOutputParser()).invoke(msgs)
+    msg = _get_llm().invoke(msgs)
     _tick(timings, "generate_s", t0)
+    text = _finish(msg, docs)
     _tick(timings, "total_s", start)
     return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten, docs=docs,
                   timings=timings, reused=reused)

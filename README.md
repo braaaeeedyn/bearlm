@@ -146,6 +146,9 @@ collection:
   chunk; anything below `RERANK_MIN_SCORE` is dropped, and if nothing clears the
   bar the answer is refused rather than guessed. (Summary/"what's in this doc"
   questions bypass the gate, since they're topically orthogonal to any one passage.)
+  The gate is leaky by design: some off-topic questions clear it (5 of 10 probes
+  score ≥ 0.02), so the strict prompt and inline citations to the retrieved chunks
+  are the real safeguard. The Ask page (corpus Q&A) has no gate.
 - **Always-on citations** that deep-link to the source PDF at the cited page.
 
 Storage: projects live under `data/projects/<slug>/` (PDFs + `project.json` with
@@ -164,11 +167,14 @@ All settings have env overrides (see `.env.example`); defaults live in
 | `OLLAMA_CHAT_MODEL` | `llama3.1:8b` | Local generator (`qwen2.5:3b` for <8 GB VRAM). |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Local embeddings (768-dim). |
 | `OLLAMA_NUM_CTX` | `8192` | Generator context window. |
+| `OLLAMA_NUM_PREDICT` | `1024` | Max tokens per generation; a cut-off answer ends with "_(Answer cut off at the length limit.)_". |
+| `OLLAMA_TIMEOUT_S` | `120` | Maximum wait (seconds) for Ollama to connect or send the next streamed chunk; a stall timeout, not a total time limit (`OLLAMA_NUM_PREDICT` bounds a long generation). |
 | `CHROMA_DIR` | `./db` | On-disk Chroma store. |
 | `RETRIEVAL_K` | `4` | Chunks fed to the LLM. |
 | `RERANK_ENABLED` | `true` | Rerank corpus retrieval (retrieve `RERANK_CANDIDATES` → keep 4). |
 | `RERANK_CANDIDATES` | `8` | Candidates scored by the reranker (`BAAI/bge-reranker-base`, `RERANK_MODEL`); 8 measured ~2x faster than 15 at equal recall (`eval/speed_experiments.json`; the sweep's first config had warm-up-inflated search time, corrected ~6.5 s vs 2.9 s search+rerank). |
 | `RERANK_MIN_SCORE` | `0.02` | Confidence gate for project/upload answers. |
+| `RERANK_DEVICE` | `auto` | Reranker device: `auto` (cuda if torch sees a GPU, else cpu), `cpu` or `cuda`. On cuda it loads in fp16 and falls back to cpu if loading fails. |
 | `PROJECT_FALLBACK_TO_CORPUS` | `true` | Let project answers fall back to the corpus. |
 | `PROJECT_MEMORY_SIZE` | `40` | Per-project memory of relevant chunk ids (LRU; `0` disables). |
 | `PROJECT_MEMORY_MERGE` | `8` | Remembered chunks added to each query's rerank pool. |
