@@ -1,13 +1,13 @@
 /* =============================================================================
    BearLM — Berkeley night theme
-   Dark-first: #192841 night blue base, California Gold as the single action
+   Dark-first: #152237 night blue base, California Gold as the single action
    color, Founders Rock for ambient glow. Light mode via [data-theme="light"].
 ============================================================================= */
 
 :root {
   /* Berkeley palette */
-  --night: #192841;
-  --night-deep: #111c30;
+  --night: #152237;
+  --night-deep: #0e1829;
   --berkeley-blue: #003262;
   --gold: #FDB515;
   --gold-deep: #C4820E;
@@ -16,10 +16,10 @@
 
   --bg: var(--night);
   --bg-deep: var(--night-deep);
-  --surface: #1f3150;
-  --surface-soft: #22365a;
-  --border: #2b4166;
-  --border-strong: #3a557f;
+  --surface: #1a2a44;
+  --surface-soft: #1d2e4d;
+  --border: #253757;
+  --border-strong: #31486c;
   --ink: #f7f4ee;
   --body: #dbe2ec;
   --subtle: #b3bfd1;
@@ -31,7 +31,7 @@
   --btn-bg: var(--gold);
   --btn-fg: var(--night);
   --danger: #f07a6a;
-  --glow-a: rgba(59, 126, 161, 0.38);
+  --glow-a: rgba(59, 126, 161, 0.30);
   --glow-b: rgba(253, 181, 21, 0.10);
   --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px -18px rgba(3, 10, 24, 0.7);
 
@@ -66,7 +66,7 @@
   --danger: #c0392b;
   --glow-a: rgba(59, 126, 161, 0.18);
   --glow-b: rgba(253, 181, 21, 0.14);
-  --shadow: 0 14px 34px -20px rgba(25, 40, 65, 0.35);
+  --shadow: 0 14px 34px -20px rgba(21, 34, 55, 0.35);
 }
 
 * { box-sizing: border-box; }

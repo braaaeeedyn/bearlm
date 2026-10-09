@@ -73,3 +73,9 @@ _**This file is the history**: an append-only log of every change, why it was ma
 **Why:** The user is publishing the repo and wanted the setup steps to work for someone else, and each doc's role made explicit.
 **Measured:** Fresh-clone path: building a new Chroma store from `data/corpus_chunks.jsonl.gz` into an empty directory took 208 s on the RTX 4060 (10,394 vectors, 768-dim), and an answer from that store came back with correct citations (cs61a p.178/179/340, genML). Live smoke test of the running server (`uvicorn bearlm.api:app`): `/`, `/projects`, `/analytics` and `/api/courses` returned 200 with all 10 courses; "What is a B+ tree?" was answered with citations from data101, cs61a and cs61b; a citation link to a PDF that isn't on the machine returned the 404 explanation. Test suite: 116 passed.
 **Decision:** Setup instructions stand as written; the user is testing the app by hand next.
+
+## 2026-10-09 — Darker night-blue theme
+**What changed:** `web/styles.css` dark theme: every night-blue token darkened ~15% at the same hue (`--night` #192841 → #152237, `--night-deep` #111c30 → #0e1829, `--surface` #1f3150 → #1a2a44, `--surface-soft` #22365a → #1d2e4d, `--border` #2b4166 → #253757, `--border-strong` #3a557f → #31486c), the Founders Rock top glow reduced (alpha 0.38 → 0.30), and the light-mode shadow tint moved to the new night value. Gold accent and light mode unchanged. Stylesheet link bumped `?v=3` → `?v=4` in the three pages so browsers refetch it.
+**Why:** The user found the site's blue slightly too bright.
+**Measured:** No behaviour change; body and muted text keep (slightly higher) contrast on the darker background. Not visually checked in a browser by Claude.
+**Decision:** Ship the darker palette.

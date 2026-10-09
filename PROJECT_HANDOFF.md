@@ -84,7 +84,7 @@ file stem for Markdown/notebooks; `source` is the filename (used for PDF deep li
 
 **Frontend (`web/`):** `index.html` (Ask), `projects.html` (Projects app shell),
 `analytics.html`, `render.js` (shared: markdown/math/citations/provenance/optimizer),
-`app.js`, `projects-app.js`, `analytics.js`, `styles.css` (Berkeley night theme),
+`app.js`, `projects-app.js`, `analytics.js`, `styles.css` (Berkeley night theme: night-blue `#152237` base, California Gold accent; light mode via `[data-theme="light"]`),
 `vendor/` (marked, DOMPurify, KaTeX, all local). Static asset URLs are versioned
 (`?v=N`) and served with `Cache-Control: no-cache`.
 
