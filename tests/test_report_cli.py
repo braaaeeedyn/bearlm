@@ -1,6 +1,5 @@
 import csv
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,18 +17,18 @@ def test_report_prints_new_metrics(tmp_path):
     with (tmp_path / "answers.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=answer_eval.FIELDS)
         w.writeheader()
-        w.writerow({"backend": "local", "question": "q1", "answer": "a (cs61a p.1)",
+        w.writerow({"question": "q1", "answer": "a (cs61a p.1)",
                     "latency_s": "4.2", "refused": "0", "citation_correctness": "1.000",
                     "faithfulness": "0.900", "completeness": "0.800",
                     "prompt_tokens": "1200", "output_tokens": "150"})
-        w.writerow({"backend": "local", "question": "q2",
+        w.writerow({"question": "q2",
                     "answer": "I don't know based on the course materials.",
                     "latency_s": "2.0", "refused": "1", "citation_correctness": "",
                     "faithfulness": "", "completeness": "",
                     "prompt_tokens": "900", "output_tokens": "10"})
 
     res = subprocess.run([sys.executable, "eval/report.py", "--out-dir", str(tmp_path)],
-                         cwd=ROOT, env={**os.environ, "BACKEND": "local"},
+                         cwd=ROOT,
                          capture_output=True, text=True, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     for label in ("recall@1", "precision@1", "refusal", "faithfulness", "completeness",
@@ -42,7 +41,7 @@ def test_report_json_metrics(tmp_path):
     retr = {"n": 2, "pool": 8, "hybrid+rerank": {"recall@5": 0.5, "mrr": 0.75},
             "gate": {"off_topic_at_or_above_gate": 1}}
     (tmp_path / "retrieval.json").write_text(json.dumps(retr), encoding="utf-8")
-    base = {"backend": "local", "citation_correctness": "", "faithfulness": "", "completeness": "",
+    base = {"citation_correctness": "", "faithfulness": "", "completeness": "",
             "rewrite_s": "0.000"}
     rows = [
         {**base, "question": "q1", "answer": "a (cs61a p.1)", "latency_s": "4.0", "refused": "0",
@@ -66,12 +65,12 @@ def test_report_json_metrics(tmp_path):
         w.writerows(rows)
 
     res = subprocess.run([sys.executable, "eval/report.py", "--out-dir", str(tmp_path), "--json"],
-                         cwd=ROOT, env={**os.environ, "BACKEND": "local"},
+                         cwd=ROOT,
                          capture_output=True, text=True, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     data = json.loads(res.stdout)
     assert data["retrieval"] == retr
-    local = data["answers"]["local"]
+    local = data["answers"]
     assert local["n"] == 4 and local["refusal_rate"] == 0.5
     assert local["uncited_rate"] == 0.5  # 1 of the 2 answered rows has no (course section) cite
     assert local["stages_s"]["search_s"]["median"] == 0.25
@@ -80,11 +79,10 @@ def test_report_json_metrics(tmp_path):
     assert local["stages_s"]["rewrite_s"]["median"] == 0.0
     assert local["latency_s"]["median"] == 2.5
     assert local["cost_per_query_usd"] == 0.0
-    assert local["openai_cost_per_query_usd_est"] > 0
 
 
 def test_report_json_run_meta_and_tok_rate(tmp_path):
-    base = {"backend": "local", "refused": "0", "latency_s": "3.0", "answer": "a"}
+    base = {"refused": "0", "latency_s": "3.0", "answer": "a"}
     rows = [{**base, "question": "q1", "output_tokens": "100", "generate_s": "2.000"},   # 50 tok/s
             {**base, "question": "q2", "output_tokens": "120", "generate_s": "3.000"},   # 40 tok/s
             {**base, "question": "q3", "output_tokens": "90", "generate_s": "1.000"},    # 90 tok/s
@@ -97,9 +95,28 @@ def test_report_json_run_meta_and_tok_rate(tmp_path):
     (tmp_path / "answers.meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
     res = subprocess.run([sys.executable, "eval/report.py", "--out-dir", str(tmp_path), "--json"],
-                         cwd=ROOT, env={**os.environ, "BACKEND": "local"},
+                         cwd=ROOT,
                          capture_output=True, text=True, encoding="utf-8")
     assert res.returncode == 0, res.stderr
     data = json.loads(res.stdout)
     assert data["run_meta"] == meta
-    assert data["answers"]["local"]["generate_tok_per_s"]["median"] == 50.0
+    assert data["answers"]["generate_tok_per_s"]["median"] == 50.0
+
+
+def test_uncited_rate_counts_known_non_digit_courses(tmp_path):
+    ref = "genML 05.01-What-Is-Machine-Learning"
+    base = {"refused": "0", "latency_s": "3.0"}
+    rows = [{**base, "question": "q1", "answer": f"ML learns from data ({ref}).", "citations": ref},
+            {**base, "question": "q2", "answer": "Some sorts (for example) are stable.",
+             "citations": "cs61b p.10"},
+            {**base, "question": "q3", "answer": "A list (cs61a p.1).", "citations": "cs61a p.1"}]
+    with (tmp_path / "answers.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=answer_eval.FIELDS)
+        w.writeheader()
+        w.writerows(rows)
+
+    res = subprocess.run([sys.executable, "eval/report.py", "--out-dir", str(tmp_path), "--json"],
+                         cwd=ROOT,
+                         capture_output=True, text=True, encoding="utf-8")
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout)["answers"]["uncited_rate"] == 1 / 3

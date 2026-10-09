@@ -1,6 +1,6 @@
-"""End-to-end answer eval: run a backend over the questions, score and log answers.
+"""End-to-end answer eval: answer every question, score and log the answers.
 
-For each question it records: backend, question, answer, citations, latency, and
+For each question it records: question, answer, citations, latency, and
 automatic answer metrics computed on the exact context the answer was built from:
   - refused               : 1 if the answer is the "I don't know based on the ..." refusal
   - citation_correctness  : share of inline (course section) citations that match a
@@ -8,22 +8,17 @@ automatic answer metrics computed on the exact context the answer was built from
   - faithfulness, completeness : 0..1 from the LOCAL llama3.1:8b judge (judge_answer).
                             Noisy LLM estimates, not ground truth. Skipped for
                             refusals, [ERROR] rows and with --no-judge.
-  - prompt_tokens, output_tokens : tiktoken counts (report.py prices OpenAI from these)
+  - prompt_tokens, output_tokens : tiktoken counts
   - context_ids           : ;-joined chunk_id of each context doc (provenance)
   - rewrite_s, search_s, rerank_s, generate_s : per-stage seconds from Answer.timings
-                            (blank when missing, e.g. the openai path, or on error)
+                            (blank on error)
 Each run also (over)writes <out>.meta.json: Chroma dir + count, questions sha256,
 config, judge flag, Ollama /api/ps VRAM split and GPU/torch state (best-effort).
 The grade/notes columns stay blank for optional hand grading
 (grade = correct | partial | wrong | hallucinated).
 
-Run one backend (reads BACKEND from the env):
-    BACKEND=local  uv run python eval/answer_eval.py
-    BACKEND=openai uv run python eval/answer_eval.py
-
-Or run BOTH on the same questions in one go (spawns a subprocess per backend so
-each imports cleanly with its own BACKEND):
-    uv run python eval/answer_eval.py --both
+Run:
+    uv run python eval/answer_eval.py [--limit N] [--no-judge]
 
 Output CSV: eval/out/answers.csv  (override with --out). Same file is appended,
 so delete it for a clean run (an existing file with a different header is refused,
@@ -38,7 +33,6 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -50,7 +44,7 @@ import _common  # noqa: E402
 
 STAGE_FIELDS = ("rewrite_s", "search_s", "rerank_s", "generate_s")  # from Answer.timings
 FIELDS = [
-    "backend", "question", "gold_course", "gold_section",
+    "question", "gold_course", "gold_section",
     "answer", "citations", "latency_s",
     "refused", "citation_correctness", "faithfulness", "completeness",
     "prompt_tokens", "output_tokens",
@@ -172,7 +166,7 @@ def _gpu_info() -> dict:
     return out
 
 
-_META_CONFIG = ("BACKEND", "OLLAMA_BASE_URL", "OLLAMA_CHAT_MODEL", "OLLAMA_EMBED_MODEL",
+_META_CONFIG = ("OLLAMA_BASE_URL", "OLLAMA_CHAT_MODEL", "OLLAMA_EMBED_MODEL",
                 "OLLAMA_NUM_CTX", "RERANK_ENABLED", "RERANK_MODEL", "RERANK_CANDIDATES",
                 "RERANK_TOP_N", "RERANK_MIN_SCORE", "HYBRID_SEARCH_ENABLED", "RRF_K",
                 "QUERY_REWRITE_ENABLED", "RERANK_DEVICE")
@@ -215,11 +209,11 @@ def _fmt(x) -> str:
     return "" if x is None else f"{x:.3f}"
 
 
-def run_one_backend(out_path: Path, questions_path: str | None = None, limit: int = 0,
+def run_eval(out_path: Path, questions_path: str | None = None, limit: int = 0,
                     judge: bool = True) -> None:
     import tiktoken
 
-    from bearlm import config, rag  # imported here so BACKEND is already set
+    from bearlm import config, rag
 
     enc = tiktoken.get_encoding(config.TOKENIZER_ENCODING)
     questions = _common.load_questions(questions_path)
@@ -255,7 +249,6 @@ def run_one_backend(out_path: Path, questions_path: str | None = None, limit: in
                     ref = _gold_text(q) if q.get("gold_chunk_ids") else None
                     scores = judge_answer(q["question"], answer_text, contexts, ref)
                 w.writerow({
-                    "backend": config.BACKEND,
                     "question": q["question"],
                     "gold_course": q.get("gold_course", ""),
                     "gold_section": q.get("gold_section", ""),
@@ -276,26 +269,15 @@ def run_one_backend(out_path: Path, questions_path: str | None = None, limit: in
                 })
                 f.flush()  # keep finished rows if the run is killed
                 n_rows += 1
-                print(f"[{config.BACKEND}] {latency:6.2f}s  {q['question'][:60]}")
+                print(f"{latency:6.2f}s  {q['question'][:60]}")
     finally:  # a killed or crashed run still records what produced its rows
         write_run_meta(out_path, questions_path, n_rows, judge)
-    print(f"Appended {config.BACKEND} rows to {out_path}")
-
-
-def run_both(out_path: Path, extra: list[str]) -> None:
-    for backend in ("local", "openai"):
-        print(f"\n=== spawning backend={backend} ===")
-        env = {**os.environ, "BACKEND": backend}
-        subprocess.run(
-            [sys.executable, __file__, "--out", str(out_path), *extra],
-            env=env, check=True,
-        )
+    print(f"Appended {n_rows} rows to {out_path}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(_common.EVAL_DIR / "out" / "answers.csv"))
-    ap.add_argument("--both", action="store_true", help="run local and openai backends")
     default_q = _common.EVAL_DIR / "questions_generated.jsonl"
     ap.add_argument("--questions", default=str(default_q if default_q.exists()
                                                else _common.EVAL_DIR / "questions.jsonl"))
@@ -303,13 +285,7 @@ def main() -> None:
     ap.add_argument("--no-judge", action="store_true",
                     help="skip the local LLM faithfulness/completeness judge")
     args = ap.parse_args()
-    out_path = Path(args.out)
-    if args.both:
-        extra = ["--questions", args.questions] + (["--limit", str(args.limit)] if args.limit else [])
-        extra += ["--no-judge"] if args.no_judge else []
-        run_both(out_path, extra)
-    else:
-        run_one_backend(out_path, args.questions, args.limit, judge=not args.no_judge)
+    run_eval(Path(args.out), args.questions, args.limit, judge=not args.no_judge)
 
 
 if __name__ == "__main__":

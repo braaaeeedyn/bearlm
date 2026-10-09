@@ -1,4 +1,4 @@
-"""Cross-encoder reranking (Phase 4) — BACKEND == "local".
+"""Cross-encoder reranking (bge-reranker-base).
 
 Retrieve a wide candidate set (config.RERANK_CANDIDATES, default 8), score each
 (query, passage) pair with a CrossEncoder (BAAI/bge-reranker-base), and keep the

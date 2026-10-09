@@ -1,15 +1,11 @@
-"""Ingestion for the openai backend: extract, chunk, embed, insert into Atlas.
-
-Run: uv run python -m bearlm.doc_processor
-"""
+"""Extract course files (PDF / Markdown / notebook) from data/raw into chunks."""
 
 import json
 from dataclasses import dataclass
 
 import pdfplumber
-from openai import OpenAI
 
-from . import config, db
+from . import config, text_splitter
 
 
 @dataclass
@@ -54,43 +50,13 @@ def extract_notebook(path):
     return [(blob, path.stem)] if blob.strip() else []
 
 
-def chunk_text(text):
-    """Word-window chunker (~0.75 words/token) with overlap. Legacy; see text_splitter."""
-    words = text.split()
-    size = int(config.CHUNK_SIZE_TOKENS * 0.75)
-    overlap = int(config.CHUNK_OVERLAP_TOKENS * 0.75)
-    step = max(size - overlap, 1)
-    results = []
-    for start in range(0, len(words), step):
-        piece = " ".join(words[start:start + size])
-        if piece.strip():
-            results.append(piece)
-    return results
-
-
-_client = None
-
-
-def _get_client():
-    # Lazy so local-only installs without OPENAI_API_KEY can still import the extractors.
-    global _client
-    if _client is None:
-        _client = OpenAI()
-    return _client
-
-
-def embed_batch(texts):
-    response = _get_client().embeddings.create(model=config.EMBEDDING_MODEL, input=texts)
-    return [d.embedding for d in response.data]
-
-
 def iter_course_dirs():
     for p in sorted(config.RAW_DIR.iterdir()):
         if p.is_dir():
             yield p
 
 
-def build_chunks_for_course(course_dir, chunker=chunk_text):
+def build_chunks_for_course(course_dir, chunker=text_splitter.split_text):
     course = course_dir.name
     chunks = []
     for path in course_dir.rglob("*"):
@@ -106,30 +72,3 @@ def build_chunks_for_course(course_dir, chunker=chunk_text):
             for piece in chunker(raw_text):
                 chunks.append(Chunk(piece, course, path.name, section))
     return chunks
-
-
-def ingest():
-    coll = db.get_chunks_collection()
-    coll.delete_many({})  # wipe so re-runs don't duplicate
-    total = 0
-    for course_dir in iter_course_dirs():
-        chunks = build_chunks_for_course(course_dir)
-        course_count = 0
-        for i in range(0, len(chunks), 100):
-            batch = chunks[i:i + 100]
-            vectors = embed_batch([c.text for c in batch])
-            docs = [
-                {"text": c.text, "embedding": v, "course": c.course,
-                 "filename": c.filename, "section": c.section}
-                for c, v in zip(batch, vectors)
-            ]
-            coll.insert_many(docs)
-            course_count += len(docs)
-        print(f"{course_dir.name}: inserted {course_count} chunks")
-        total += course_count
-    print(f"Total: inserted {total} chunks")
-
-
-if __name__ == "__main__":
-    print("Mongo reachable:", db.ping())
-    ingest()

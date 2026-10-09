@@ -8,7 +8,7 @@ import answer_eval
 from bearlm import rag
 
 
-def test_run_one_backend_writes_metric_columns(monkeypatch, tmp_path):
+def test_run_eval_writes_metric_columns(monkeypatch, tmp_path):
     docs = [Document(page_content="A hash join builds a hash table.",
                      metadata={"course": "data101", "section": "p.3", "chunk_id": "data101:1"})]
     monkeypatch.setattr(rag, "answer", lambda q, *a, **k: rag.Answer(
@@ -22,7 +22,7 @@ def test_run_one_backend_writes_metric_columns(monkeypatch, tmp_path):
                                            "gold_section": "p.3"}) for i in range(2)),
                      encoding="utf-8")
     out = tmp_path / "answers.csv"
-    answer_eval.run_one_backend(out, str(qpath))
+    answer_eval.run_eval(out, str(qpath))
 
     with out.open(encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -41,7 +41,7 @@ def test_run_one_backend_writes_metric_columns(monkeypatch, tmp_path):
                    encoding="utf-8")
     before = old.read_text(encoding="utf-8")
     with pytest.raises(SystemExit):
-        answer_eval.run_one_backend(old, str(qpath))
+        answer_eval.run_eval(old, str(qpath))
     assert old.read_text(encoding="utf-8") == before
 
 
@@ -51,7 +51,7 @@ def test_answer_eval_writes_stage_timings(monkeypatch, tmp_path):
     qpath = tmp_path / "q.jsonl"
     qpath.write_text(json.dumps({"question": "q0"}), encoding="utf-8")
     out = tmp_path / "answers.csv"
-    answer_eval.run_one_backend(out, str(qpath), judge=False)
+    answer_eval.run_eval(out, str(qpath), judge=False)
 
     with out.open(encoding="utf-8") as f:
         row = next(csv.DictReader(f))
@@ -71,7 +71,7 @@ def test_answer_eval_writes_run_meta_and_context_ids(monkeypatch, tmp_path):
     qpath = tmp_path / "q.jsonl"
     qpath.write_text(json.dumps({"question": "q0"}), encoding="utf-8")
     out = tmp_path / "answers.csv"
-    answer_eval.run_one_backend(out, str(qpath), judge=False)
+    answer_eval.run_eval(out, str(qpath), judge=False)
 
     with out.open(encoding="utf-8") as f:
         row = next(csv.DictReader(f))
@@ -88,7 +88,7 @@ def test_answer_eval_writes_run_meta_and_context_ids(monkeypatch, tmp_path):
 
     monkeypatch.setattr(answer_eval, "_ollama_ps", boom)
     out.unlink()
-    answer_eval.run_one_backend(out, str(qpath), judge=False)
+    answer_eval.run_eval(out, str(qpath), judge=False)
     meta = json.loads((tmp_path / "answers.meta.json").read_text(encoding="utf-8"))
     assert meta["ollama_ps"] is None and "gpu" in meta
 
@@ -108,7 +108,7 @@ def test_answer_eval_flushes_rows_and_writes_meta_on_error(monkeypatch, tmp_path
 
     out = tmp_path / "answers.csv"
     monkeypatch.setattr(rag, "answer", answer_raising(TimeoutError("timed out")))
-    answer_eval.run_one_backend(out, str(qpath))
+    answer_eval.run_eval(out, str(qpath))
     with out.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 3
@@ -119,7 +119,7 @@ def test_answer_eval_flushes_rows_and_writes_meta_on_error(monkeypatch, tmp_path
     out2 = tmp_path / "killed.csv"
     monkeypatch.setattr(rag, "answer", answer_raising(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
-        answer_eval.run_one_backend(out2, str(qpath))
+        answer_eval.run_eval(out2, str(qpath))
     with out2.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert [r["question"] for r in rows] == ["q0"]

@@ -42,6 +42,11 @@ def test_cited_refs_and_citation_correctness():
     assert _common.citation_correctness("I don't know based on the course materials.", docs) is None
 
 
+def test_citation_correctness_counts_genml():
+    docs = [Document(page_content="a", metadata={"course": "genML", "section": "05.01-A"})]
+    assert _common.citation_correctness("X (genML 05.01-A).", docs) == 1.0
+
+
 def test_parse_judge():
     none = {"faithfulness": None, "completeness": None}
     assert parse_judge('Sure! {"faithfulness": 0.8, "completeness": 0.5} hope that helps') == {

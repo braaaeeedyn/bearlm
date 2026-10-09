@@ -1,7 +1,7 @@
 [project]
 name = "bearlm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local, grounded RAG study assistant over UC Berkeley CS/DS course materials"
 readme = "README.md"
 authors = [
     { name = "Braedyn Thompson", email = "braaaeeedyn@gmail.com" }
@@ -14,13 +14,10 @@ dependencies = [
     "langchain-core>=1.6.5",
     "langchain-ollama>=1.1.0",
     "langchain-text-splitters>=1.1.2",
-    "openai>=3.10.0",
     "pdfplumber>=0.11.10",
-    "pymongo[srv]>=4.18.0",
     "pymupdf>=1.28.2",
     "python-dotenv>=1.2.3",
     "python-multipart>=0.0.32",
-    "ragas>=0.3.1",
     "rank-bm25>=0.2.2",
     "sentence-transformers>=6.1.0",
     "tiktoken>=0.14.0",
@@ -35,9 +32,6 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
-
-[project.scripts]
-bearlm = "bearlm:main"
 
 [build-system]
 requires = ["uv_build>=0.12.11,<0.13.0"]

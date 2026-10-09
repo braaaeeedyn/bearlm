@@ -12,7 +12,7 @@ precision@k is page-level: a top-k chunk counts as relevant if it is a gold hit 
 shares the gold (course, section) (_common.precision_at_k).
 
 Run:
-    BACKEND=local uv run python eval/retrieval_eval.py --questions eval/questions_generated.jsonl
+    uv run python eval/retrieval_eval.py --questions eval/questions_generated.jsonl
 
 Writes eval/out/retrieval.json (read by report.py). Invents no numbers.
 """
@@ -64,11 +64,9 @@ def main() -> None:
     ap.add_argument("--pool", type=int, default=max(config.RERANK_CANDIDATES, 5))
     args = ap.parse_args()
 
-    if config.BACKEND != "local":
-        sys.exit("Run with BACKEND=local (retrieval eval targets Ollama+Chroma).")
     vs = local_store.get_vectorstore()
     if vs._collection.count() == 0:
-        sys.exit("Chroma is empty. Run `BACKEND=local uv run python -m bearlm.local_store` first.")
+        sys.exit("Chroma is empty. Run `uv run python -m bearlm.local_store` first.")
 
     from bearlm import rerank, search
 

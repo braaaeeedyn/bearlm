@@ -1,25 +1,17 @@
-"""Local vector store + embeddings (Ollama + Chroma) — BACKEND == "local".
+"""Vector store + embeddings: Ollama (nomic-embed-text, 768-dim) + on-disk Chroma.
 
-Phase 2 of the migration. Mirrors what `doc_processor` + `db` do for the OpenAI/
-Atlas backend, but with:
-  - embeddings:   OllamaEmbeddings(model="nomic-embed-text")   -> 768-dim
-  - vector store: Chroma(persist_directory=config.CHROMA_DIR)
-
-The corpus is re-extracted from ``data/raw/`` (fully local, no Atlas needed) and
-re-embedded. Two chunkers are available:
-  - default: the token-based RecursiveCharacterTextSplitter (Phase 2 spec).
-  - --legacy-splitter: the original word-window chunker, which reproduces the
-    exact 2,241-chunk corpus for a like-for-like count comparison.
-
-Run:
-    BACKEND=local uv run python -m bearlm.local_store            # token splitter
-    BACKEND=local uv run python -m bearlm.local_store --legacy-splitter
-    BACKEND=local uv run python -m bearlm.local_store --verify   # count + dim only
+Build the course corpus store one of two ways:
+    uv run python -m bearlm.local_store            # from the shipped chunks (data/corpus_chunks.jsonl.gz)
+    uv run python -m bearlm.local_store --raw      # re-chunk your own files in data/raw/<course>/
+    uv run python -m bearlm.local_store --export   # write the store's chunks to the export file
+    uv run python -m bearlm.local_store --verify   # count + dim only
 """
 
 from __future__ import annotations
 
 import functools
+import gzip
+import json
 import shutil
 import sys
 import time
@@ -50,13 +42,6 @@ def get_vectorstore(collection_name: str | None = None) -> Chroma:
         collection_name=collection_name or config.CHROMA_COLLECTION,
         embedding_function=get_embeddings(),
         persist_directory=config.CHROMA_DIR,
-    )
-
-
-def get_retriever(k: int | None = None, collection_name: str | None = None):
-    """LangChain retriever over a Chroma collection (k defaults to config.RETRIEVAL_K)."""
-    return get_vectorstore(collection_name).as_retriever(
-        search_kwargs={"k": k or config.RETRIEVAL_K}
     )
 
 
@@ -128,49 +113,61 @@ def _add_batch_with_retry(vs, texts, ids, metadatas, retries: int = 6) -> None:
             delay = min(delay * 2, 30.0)
 
 
-def ingest_local(use_legacy_splitter: bool = False, batch_size: int = 32,
-                 pause: float = 0.15) -> int:
-    """Re-extract data/raw, embed with Ollama, and store in Chroma. Returns count.
+def _fill_store(rows, batch_size: int = 32, pause: float = 0.15) -> int:
+    """Replace the corpus store with (id, text, metadata) rows, embedding locally.
 
-    Uses small batches, a brief pause between them, and per-batch retry/backoff
-    so a large corpus doesn't exhaust Windows sockets mid-run.
+    Small batches, a brief pause and per-batch retry so a large corpus doesn't
+    exhaust Windows sockets mid-run.
     """
-    chunker = doc_processor.chunk_text if use_legacy_splitter else text_splitter.split_text
-    which = "legacy word-window" if use_legacy_splitter else "token RecursiveCharacterTextSplitter"
-    print(f"[ingest_local] splitter = {which} | batch_size = {batch_size}")
-
     _reset_store()
     vs = get_vectorstore()
-
     total = 0
-    for course_dir in doc_processor.iter_course_dirs():
-        chunks = doc_processor.build_chunks_for_course(course_dir, chunker=chunker)
-        # Stable, human-readable ids so eval gold_chunk_ids can reference them.
-        ids = [f"{c.course}:{i}" for i, c in enumerate(chunks)]
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            batch_ids = ids[i : i + batch_size]
-            _add_batch_with_retry(
-                vs,
-                texts=[c.text for c in batch],
-                ids=batch_ids,
-                metadatas=[
-                    {
-                        "course": c.course,
-                        "section": c.section,
-                        "source": c.filename,
-                        "chunk_id": cid,
-                    }
-                    for c, cid in zip(batch, batch_ids)
-                ],
-            )
-            if pause:
-                time.sleep(pause)
-        print(f"  {course_dir.name}: embedded {len(chunks)} chunks")
-        total += len(chunks)
-
-    print(f"[ingest_local] total embedded: {total}")
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        _add_batch_with_retry(vs, texts=[r[1] for r in batch], ids=[r[0] for r in batch],
+                              metadatas=[r[2] for r in batch])
+        total += len(batch)
+        if pause:
+            time.sleep(pause)
+        if total % 1000 < batch_size:
+            print(f"  embedded {total}/{len(rows)}")
+    print(f"[ingest] total embedded: {total}")
     return total
+
+
+def ingest_raw(**kw) -> int:
+    """Re-chunk data/raw/<course>/ (private course files) and rebuild the store."""
+    rows = []
+    for course_dir in doc_processor.iter_course_dirs():
+        chunks = doc_processor.build_chunks_for_course(course_dir)
+        # Stable, human-readable ids so eval gold_chunk_ids can reference them.
+        for i, c in enumerate(chunks):
+            cid = f"{c.course}:{i}"
+            rows.append((cid, c.text, {"course": c.course, "section": c.section,
+                                       "source": c.filename, "chunk_id": cid}))
+        print(f"  {course_dir.name}: {len(chunks)} chunks")
+    return _fill_store(rows, **kw)
+
+
+def ingest_export(path=None, **kw) -> int:
+    """Rebuild the store from the public chunk export (no course files needed)."""
+    with gzip.open(path or config.CHUNKS_EXPORT, "rt", encoding="utf-8") as f:
+        rows = [(r["id"], r["text"], r["metadata"]) for r in map(json.loads, f)]
+    print(f"[ingest] {len(rows)} chunks from {path or config.CHUNKS_EXPORT}")
+    return _fill_store(rows, **kw)
+
+
+def export_chunks(path=None) -> int:
+    """Write the corpus store's chunk text + metadata (no embeddings, no PDFs) as gzipped JSONL."""
+    got = get_vectorstore()._collection.get(include=["documents", "metadatas"])
+    rows = sorted(zip(got["ids"], got["documents"], got["metadatas"]))
+    # mtime=0 keeps the file byte-identical across re-exports of the same store.
+    with open(path or config.CHUNKS_EXPORT, "wb") as raw, \
+            gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as g:
+        for cid, text, meta in rows:
+            g.write((json.dumps({"id": cid, "text": text, "metadata": meta}, ensure_ascii=False) + "\n").encode())
+    print(f"[export] {len(rows)} chunks -> {path or config.CHUNKS_EXPORT}")
+    return len(rows)
 
 
 def drop_collection(collection_name: str) -> None:
@@ -234,15 +231,13 @@ def verify() -> None:
             dim = len(embs[0])
     print(f"[verify] Chroma collection '{config.CHROMA_COLLECTION}' @ {config.CHROMA_DIR}")
     print(f"[verify] vector_count = {count}")
-    print(f"[verify] vector_dim   = {dim}  (expected {config.LOCAL_EMBEDDING_DIM})")
+    print(f"[verify] vector_dim   = {dim}  (expected {config.EMBEDDING_DIM})")
 
 
 if __name__ == "__main__":
-    if config.BACKEND != "local":
-        print("WARNING: BACKEND != 'local'. Run with `BACKEND=local` to use Ollama/Chroma.")
     args = sys.argv[1:]
-    if "--verify" in args:
-        verify()
-    else:
-        ingest_local(use_legacy_splitter="--legacy-splitter" in args)
-        verify()
+    if "--export" in args:
+        export_chunks()
+    elif "--verify" not in args:
+        ingest_raw() if "--raw" in args else ingest_export()
+    verify()

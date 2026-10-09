@@ -1,9 +1,8 @@
 """BearLM HTTP API + static frontend host.
 
-A thin FastAPI layer in front of the existing RAG engine (`rag.answer`). It
-serves the hand-built frontend in `web/` and exposes one JSON endpoint the page
-calls to ask a question. Every question is logged to `bearlm.query_logs` (same
-data the Stage 7 analytics will read).
+A thin FastAPI layer over the RAG engine (`rag`). It serves the hand-built
+frontend in `web/` and the JSON endpoints it calls. Questions are logged to a
+local SQLite file (`analytics.py`) for the analytics page.
 
 Run it:
     uv run uvicorn bearlm.api:app --reload
@@ -12,21 +11,55 @@ then open http://localhost:8000
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+import ollama
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, rag
+from . import config, rag
 
 MAX_PDF_BYTES = 50 * 1024 * 1024  # reject uploads larger than 50 MB
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 
-app = FastAPI(title="BearLM", docs_url="/api/docs")
+
+def _prewarm_bm25() -> None:
+    """Build the corpus BM25 index in the background so the first hybrid query
+    isn't slow (the index over ~10k chunks takes a while to build once)."""
+    if not config.HYBRID_SEARCH_ENABLED:
+        return
+    import threading
+
+    from . import search
+
+    threading.Thread(
+        target=lambda: search._get_bm25(config.CHROMA_COLLECTION),
+        daemon=True,
+    ).start()
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    _prewarm_bm25()
+    yield
+
+
+app = FastAPI(title="BearLM", docs_url="/api/docs", lifespan=_lifespan)
+
+
+@app.exception_handler(rag.LLMUnavailable)
+@app.exception_handler(ConnectionError)
+@app.exception_handler(ollama.ResponseError)
+@app.exception_handler(httpx.TimeoutException)
+async def _ollama_unavailable(request, exc):
+    """Ollama down, out of memory or stalled (generation, embedding or retrieval): 503 + detail."""
+    msg = str(exc) if isinstance(exc, rag.LLMUnavailable) else rag.ollama_error_message(exc)
+    return JSONResponse(status_code=503, content={"detail": msg})
 
 
 @app.middleware("http")
@@ -37,22 +70,6 @@ async def _no_cache_static(request, call_next):
     if request.url.path.startswith("/static/"):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
-
-
-@app.on_event("startup")
-def _prewarm_bm25() -> None:
-    """Build the corpus BM25 index in the background so the first hybrid query
-    isn't slow (the index over ~10k chunks takes a while to build once)."""
-    if config.BACKEND != "local" or not config.HYBRID_SEARCH_ENABLED:
-        return
-    import threading
-
-    from . import search
-
-    threading.Thread(
-        target=lambda: search._get_bm25(config.CHROMA_COLLECTION),
-        daemon=True,
-    ).start()
 
 
 class AskRequest(BaseModel):
@@ -85,11 +102,6 @@ class CreateProjectRequest(BaseModel):
     name: str
 
 
-def _require_local() -> None:
-    if config.BACKEND != "local":
-        raise HTTPException(status_code=400, detail="Projects/uploads require BACKEND=local.")
-
-
 async def _read_pdf(file: UploadFile) -> bytes:
     """Read an uploaded file, enforcing PDF type and a size cap."""
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -103,24 +115,11 @@ async def _read_pdf(file: UploadFile) -> bytes:
 
 
 def _log_query(question: str, citations: list[dict], source: str = "corpus") -> None:
-    """Best-effort log of one question; never let logging break a response.
-
-    Local backend logs to SQLite (analytics.py); OpenAI backend to Atlas.
-    """
+    """Best-effort log of one question to SQLite; never let logging break a response."""
     try:
-        if config.BACKEND == "local":
-            from . import analytics
+        from . import analytics
 
-            analytics.log_query(question, source, citations)
-            return
-        coll = db.get_query_logs_collection()
-        coll.insert_one(
-            {
-                "question": question,
-                "timestamp": datetime.now(timezone.utc),
-                "courses": sorted({c["course"] for c in citations}),
-            }
-        )
+        analytics.log_query(question, source, citations)
     except Exception:
         pass
 
@@ -143,7 +142,6 @@ def ask(req: AskRequest) -> AskResponse:
 @app.post("/api/optimize", response_model=OptimizeResponse)
 def optimize(req: OptimizeRequest) -> OptimizeResponse:
     """Suggest a prompt-engineered rewrite of the user's prompt (local LLM)."""
-    _require_local()
     prompt = req.prompt.strip()
     if not prompt:
         return OptimizeResponse(optimized="")
@@ -156,7 +154,6 @@ def optimize(req: OptimizeRequest) -> OptimizeResponse:
 
 @app.get("/api/projects")
 def list_projects() -> dict:
-    _require_local()
     from . import projects
 
     return {"projects": projects.list_projects()}
@@ -164,7 +161,6 @@ def list_projects() -> dict:
 
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest) -> dict:
-    _require_local()
     from . import projects
 
     name = req.name.strip()
@@ -178,7 +174,6 @@ def create_project(req: CreateProjectRequest) -> dict:
 
 @app.get("/api/projects/{slug}")
 def get_project(slug: str) -> dict:
-    _require_local()
     from . import projects
 
     meta = projects.get_project(slug)
@@ -189,7 +184,6 @@ def get_project(slug: str) -> dict:
 
 @app.delete("/api/projects/{slug}")
 def delete_project(slug: str) -> dict:
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -200,7 +194,6 @@ def delete_project(slug: str) -> dict:
 
 @app.post("/api/projects/{slug}/pdfs")
 async def add_project_pdf(slug: str, file: UploadFile = File(...)) -> dict:
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -211,7 +204,6 @@ async def add_project_pdf(slug: str, file: UploadFile = File(...)) -> dict:
 
 @app.delete("/api/projects/{slug}/pdfs/{filename}")
 def remove_project_pdf(slug: str, filename: str) -> dict:
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -226,7 +218,6 @@ class CorpusScopeRequest(BaseModel):
 @app.post("/api/projects/{slug}/corpus")
 def set_corpus_scope(slug: str, req: CorpusScopeRequest) -> dict:
     """Set which course-corpus subjects this project may fall back to."""
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -242,7 +233,6 @@ class CreateChatRequest(BaseModel):
 
 @app.post("/api/projects/{slug}/chats")
 def create_chat(slug: str, req: CreateChatRequest | None = None) -> dict:
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -252,7 +242,6 @@ def create_chat(slug: str, req: CreateChatRequest | None = None) -> dict:
 
 @app.get("/api/projects/{slug}/chats/{chat_id}")
 def get_chat(slug: str, chat_id: str) -> dict:
-    _require_local()
     from . import projects
 
     chat = projects.get_chat(slug, chat_id)
@@ -263,7 +252,6 @@ def get_chat(slug: str, chat_id: str) -> dict:
 
 @app.delete("/api/projects/{slug}/chats/{chat_id}")
 def delete_chat(slug: str, chat_id: str) -> dict:
-    _require_local()
     from . import projects
 
     projects.delete_chat(slug, chat_id)
@@ -273,7 +261,6 @@ def delete_chat(slug: str, chat_id: str) -> dict:
 @app.post("/api/projects/{slug}/reset")
 def reset_project_context(slug: str) -> dict:
     """Clear all of a project's chats (conversation context) but keep its PDFs."""
-    _require_local()
     from . import projects
 
     if projects.get_project(slug) is None:
@@ -284,7 +271,6 @@ def reset_project_context(slug: str) -> dict:
 
 @app.post("/api/projects/{slug}/chats/{chat_id}/ask", response_model=AskResponse)
 def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
-    _require_local()
     from . import projects
 
     chat = projects.get_chat(slug, chat_id)
@@ -304,7 +290,6 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
         rewrite=req.rewrite,
         corpus_courses=(project or {}).get("corpus_courses"),
         memory=projects.memory_ids(slug),
-        reuse=projects.reuse_cache(slug),
     )
     # Remember chunks that grounded a topical answer (not refusals or summaries).
     if result.source in ("project", "corpus") and not rag._is_meta_question(question):
@@ -328,7 +313,6 @@ def ask_chat(slug: str, chat_id: str, req: AskRequest) -> AskResponse:
 
 @app.post("/api/uploads")
 async def create_upload(file: UploadFile = File(...)) -> dict:
-    _require_local()
     from . import projects
 
     data = await _read_pdf(file)
@@ -337,7 +321,6 @@ async def create_upload(file: UploadFile = File(...)) -> dict:
 
 @app.post("/api/uploads/{uid}/ask", response_model=AskResponse)
 def ask_upload(uid: str, req: AskRequest) -> AskResponse:
-    _require_local()
     from . import projects
 
     question = req.question.strip()
@@ -361,7 +344,6 @@ def ask_upload(uid: str, req: AskRequest) -> AskResponse:
 
 @app.delete("/api/uploads/{uid}")
 def delete_upload(uid: str) -> dict:
-    _require_local()
     from . import projects
 
     projects.delete_upload(uid)
@@ -372,11 +354,9 @@ def delete_upload(uid: str) -> dict:
 def courses() -> dict:
     """Distinct course labels actually present in the corpus (for the footer)."""
     try:
-        if config.BACKEND == "local":
-            from . import local_store
+        from . import local_store
 
-            return {"courses": local_store.distinct_courses()}
-        return {"courses": sorted(db.get_chunks_collection().distinct("course"))}
+        return {"courses": local_store.distinct_courses()}
     except Exception:
         return {"courses": []}
 
@@ -389,7 +369,6 @@ class PracticeRequest(BaseModel):
 @app.post("/api/practice")
 def practice(req: PracticeRequest) -> dict:
     """Generate grounded practice questions for the most-asked area (or a given course)."""
-    _require_local()
     from . import analytics
 
     n = max(1, min(req.n, 10))
@@ -398,62 +377,13 @@ def practice(req: PracticeRequest) -> dict:
 
 @app.get("/api/stats")
 def stats() -> dict:
-    """Aggregate query logs for the analytics view (SQLite locally, else Atlas)."""
-    if config.BACKEND == "local":
-        from . import analytics
+    """Aggregate query logs for the analytics view."""
+    from . import analytics
 
-        return analytics.stats()
-
-    logs = db.get_query_logs_collection()
-    total = logs.count_documents({})
-    uncited = logs.count_documents({"courses": {"$size": 0}})
-
-    by_course = [
-        {"course": row["_id"], "count": row["count"]}
-        for row in logs.aggregate(
-            [
-                {"$unwind": "$courses"},
-                {"$group": {"_id": "$courses", "count": {"$sum": 1}}},
-                {"$sort": {"count": -1, "_id": 1}},
-            ]
-        )
-    ]
-    per_day = [
-        {"date": row["_id"], "count": row["count"]}
-        for row in logs.aggregate(
-            [
-                {
-                    "$group": {
-                        "_id": {
-                            "$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}
-                        },
-                        "count": {"$sum": 1},
-                    }
-                },
-                {"$sort": {"_id": 1}},
-            ]
-        )
-    ]
-    recent_unanswered = [
-        row["question"]
-        for row in logs.find(
-            {"courses": {"$size": 0}}, {"_id": 0, "question": 1}
-        )
-        .sort("timestamp", -1)
-        .limit(8)
-    ]
-
-    return {
-        "total": total,
-        "uncited": uncited,
-        "courses_covered": len(by_course),
-        "by_course": by_course,
-        "per_day": per_day,
-        "recent_unanswered": recent_unanswered,
-    }
+    return analytics.stats()
 
 
-def _serve_within(base: Path, *parts: str) -> FileResponse:
+def _serve_within(base: Path, *parts: str, missing: str = "Source not found") -> FileResponse:
     """Serve a file under `base`, refusing any path that escapes it (traversal).
 
     Served inline (no `filename=`) so PDFs open in-tab and honor `#page=N`.
@@ -461,14 +391,16 @@ def _serve_within(base: Path, *parts: str) -> FileResponse:
     base = base.resolve()
     target = base.joinpath(*parts).resolve()
     if base not in target.parents or not target.is_file():
-        raise HTTPException(status_code=404, detail="Source not found")
+        raise HTTPException(status_code=404, detail=missing)
     return FileResponse(target)
 
 
 @app.get("/source/{course}/{filename}")
 def source_file(course: str, filename: str) -> FileResponse:
-    """Serve a raw course textbook PDF so citations can deep-link to it."""
-    return _serve_within(config.RAW_DIR, course, filename)
+    """Serve a course PDF so citations can deep-link to it (only if it's in data/raw)."""
+    return _serve_within(config.RAW_DIR, course, filename,
+                         missing="This course file isn't on this machine. Course PDFs aren't published "
+                                 "with BearLM; add your own under data/raw/<course>/ to enable deep links.")
 
 
 @app.get("/projects/{slug}/pdfs/{filename}")

@@ -6,7 +6,7 @@ retrieval surfaces the exact source chunk. This is a synthetic-but-grounded
 benchmark (the questions are LLM-written, the gold labels are exact).
 
 Run:
-    BACKEND=local uv run python eval/generate_questions.py --per-course 5 \
+    uv run python eval/generate_questions.py --per-course 5 \
         --out eval/questions_generated.jsonl
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bearlm import config, local_store  # noqa: E402
+from bearlm import local_store  # noqa: E402
 
 
 def _noise(text: str) -> float:
@@ -67,8 +67,6 @@ def main() -> None:
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "questions_generated.jsonl"))
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
-    if config.BACKEND != "local":
-        sys.exit("Run with BACKEND=local.")
     random.seed(args.seed)
 
     from langchain_core.output_parsers import StrOutputParser

@@ -1,13 +1,8 @@
-"""Token-based recursive text splitter (local backend).
+"""Token-based recursive text splitter used for every ingest path.
 
-Phase 2 of the local migration: swap the old word-count chunker for a
-`RecursiveCharacterTextSplitter` whose length function counts *tokens* (via
-tiktoken) rather than characters. This keeps chunk sizes aligned with the model's
-real context budget and splits on natural boundaries (paragraphs, then lines,
-then sentences, then words) instead of a blind word window.
-
-The old word-based `doc_processor.chunk_text` is left intact for the OpenAI
-backend so the two ingest paths can be compared.
+A `RecursiveCharacterTextSplitter` whose length function counts tokens (tiktoken),
+so chunks match the model's context budget and split on paragraphs, then lines,
+then sentences, then words.
 """
 
 from __future__ import annotations

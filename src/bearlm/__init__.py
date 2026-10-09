@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from bearlm!")
+"""BearLM: a local, grounded RAG study assistant over UC Berkeley CS/DS course materials."""

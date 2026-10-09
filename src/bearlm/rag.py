@@ -1,4 +1,4 @@
-"""Retrieval + RAG core: retrieve, dispatch by backend, and generate cited answers.
+"""Retrieval + RAG core: retrieve and generate cited answers.
 
 Also holds query rewriting, the prompt optimizer, and the grounded answer path
 (confidence gate + project-first fallback) used by projects and uploads.
@@ -8,15 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from openai import OpenAI
-
-from . import config, db
-from .doc_processor import embed_batch
-
-VECTOR_INDEX = "vector_index"
-TOP_K = 5
-NUM_CANDIDATES = 100
-CHAT_MODEL = "gpt-4o-mini"
+from . import config
 
 
 @dataclass
@@ -26,8 +18,7 @@ class Answer:
     source: str = "corpus"  # "project" | "upload" | "corpus" | "none"
     rewritten_query: str | None = None
     docs: list = field(default_factory=list, repr=False)  # exact context used (for eval)
-    timings: dict = field(default_factory=dict)  # per-stage seconds (local paths only)
-    reused: bool = False  # retrieval reused from a near-repeat question
+    timings: dict = field(default_factory=dict)  # per-stage seconds
 
 
 def _tick(timings, key, t0):
@@ -35,57 +26,6 @@ def _tick(timings, key, t0):
     if timings is not None:
         timings[key] = timings.get(key, 0.0) + time.perf_counter() - t0
 
-
-def retrieve(question, k=None):
-    """Backend-dispatching retrieval."""
-    if config.BACKEND == "local":
-        return _retrieve_local(question, k)
-    return _retrieve_openai(question, k)
-
-
-def _retrieve_openai(question, k=None):
-    """Embed the question and $vectorSearch Atlas for the top-k chunks."""
-    k = k or TOP_K
-    qvec = embed_batch([question])[0]
-    coll = db.get_chunks_collection()
-    pipeline = [
-        {
-            "$vectorSearch": {
-                "index": VECTOR_INDEX,
-                "path": "embedding",
-                "queryVector": qvec,
-                "numCandidates": NUM_CANDIDATES,
-                "limit": k,
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,
-                "text": 1,
-                "course": 1,
-                "section": 1,
-                "filename": 1,
-                "score": {"$meta": "vectorSearchScore"},
-            }
-        },
-    ]
-    return list(coll.aggregate(pipeline))
-
-def build_prompt(question, chunks):
-    """Chat messages for the openai backend: system rules + tagged context + question."""
-    context = "\n\n".join(f"[{c['course']} {c['section']}] {c['text']}" for c in chunks)
-    system = ("You are BearLM, a study assistant for UC Berkeley CS/DS courses. "
-              "Answer ONLY using the provided context. If the answer isn't in the "
-              "context, say you do not know. Cite sources as (course section). "
-              "Write all mathematical notation in LaTeX: wrap inline math in "
-              "single dollar signs ($...$) and standalone equations in double "
-              "dollar signs ($$...$$)."
-              )
-    user = f"Context:\n{context}\n\nQuestion: {question}"
-    return [ {"role": "system", "content": system}, {"role": "user", "content": user},]
-
-
-_client = OpenAI() if config.BACKEND == "openai" else None
 
 _CITE_RULE = (
     "Cite sources inline as (course section), copying a source's header, e.g. "
@@ -150,6 +90,46 @@ def _normalize_citations(text, docs):
     return _CITE_GROUP_RE.sub(repl, text)
 
 
+# The same groups as _CITE_GROUP_RE, plus the spaces/tabs before them (removed along with a dropped group).
+_CITE_GROUP_WS_RE = re.compile(r"([ \t]*)(?:" + _CITE_GROUP_RE.pattern + ")")
+_CITE_COURSE_RE = re.compile(r"(?:cs|data)\d+[A-Za-z]*", re.IGNORECASE)
+
+
+def _drop_outside_citations(text, docs):
+    """Remove cite parts that name no context chunk. A group is rewritten only when every
+    part is cite-like ("<course> <section with a digit>"); otherwise it stays byte-identical.
+    Only ever removes refs, never adds one, and never touches a markdown link."""
+    # ponytail: course = cs/data code (corpus prefixes) or a context course, so math like (R2 = 0.87)
+    # stays. Limits: a fabricated cite to another prefix (stat134) or a non-digit course (genML, a
+    # project slug) outside the context is kept; a prose group like (cs61b has 3 projects) whose
+    # course is outside the context is still deleted. Upgrade: structured citations or a corpus course list.
+    refs = {}
+    for d in docs:
+        m = d.metadata or {}
+        if m.get("course") and m.get("section"):
+            sec = str(m["section"])
+            refs[(str(m["course"]).lower(), re.sub(r"\s+", "", sec).lower())] = f"{m['course']} {sec}"
+    courses = {c for c, _ in refs}
+    if not text:
+        return text
+
+    def repl(match):
+        body = _CITE_LABEL_RE.sub("", match.group(2) if match.group(2) is not None else match.group(3))
+        keys = []
+        for part in re.split(r"[;,]", body):
+            toks = part.split()
+            if (len(toks) < 2 or not (_CITE_COURSE_RE.fullmatch(toks[0]) or toks[0].lower() in courses)
+                    or not re.search(r"\d", "".join(toks[1:]))):
+                return match.group(0)
+            keys.append((toks[0].lower(), "".join(toks[1:]).lower()))
+        kept = [refs[k] for k in keys if k in refs]
+        if len(kept) == len(keys):
+            return match.group(0)
+        return match.group(1) + "(" + "; ".join(kept) + ")" if kept else ""
+
+    return _CITE_GROUP_WS_RE.sub(repl, text)
+
+
 def _get_llm():
     from langchain_ollama import ChatOllama
 
@@ -163,6 +143,45 @@ def _get_llm():
     )
 
 
+class LLMUnavailable(RuntimeError):
+    """Answer generation failed in Ollama; the message is safe to show the user."""
+
+
+def ollama_error_message(exc):
+    """User-facing message for an Ollama failure (generation, embedding or a stall)."""
+    import httpx
+    import ollama
+
+    url = config.OLLAMA_BASE_URL
+    if isinstance(exc, ConnectionError):
+        return f"Can't reach Ollama at {url}. Start Ollama (`ollama serve`) and try again."
+    if isinstance(exc, httpx.TimeoutException):
+        return (f"Ollama at {url} did not answer within {config.OLLAMA_TIMEOUT_S:g} s. "
+                "Try again, or see README \"Troubleshooting\".")
+    if isinstance(exc, ollama.ResponseError) and 0 <= exc.status_code < 500:
+        return (f"Ollama at {url} rejected the request ({exc.status_code}: {exc.error}). "
+                f"Check that {config.OLLAMA_CHAT_MODEL} is pulled (`ollama pull {config.OLLAMA_CHAT_MODEL}`).")
+    return (f"Ollama at {url} failed to generate an answer; it may be out of GPU memory. "
+            "Try again, or see README \"Troubleshooting\".")
+
+
+def _generate(runnable, inp):
+    """invoke() an answer-generation runnable, mapping Ollama failures to LLMUnavailable."""
+    import httpx
+    import ollama
+
+    for attempt in (1, 2):
+        try:
+            return runnable.invoke(inp)
+        except ollama.ResponseError as e:
+            # One retry for 5xx / mid-stream errors: run 5 hit a transient CUDA OOM while llama-server reloaded.
+            if attempt == 1 and (e.status_code >= 500 or e.status_code == -1):
+                continue
+            raise LLMUnavailable(ollama_error_message(e)) from e
+        except (ConnectionError, httpx.TimeoutException) as e:
+            raise LLMUnavailable(ollama_error_message(e)) from e
+
+
 TRUNCATED_NOTE = "\n\n_(Answer cut off at the length limit.)_"
 
 
@@ -171,6 +190,7 @@ def _finish(msg, docs):
     text = msg.content
     if "I don't know based on the" not in text:
         text = _normalize_citations(text, docs)
+        text = _drop_outside_citations(text, docs)
     if (msg.response_metadata or {}).get("done_reason") == "length":
         text += TRUNCATED_NOTE
     return text
@@ -196,24 +216,6 @@ def _retrieve_local(question, k=None, timings=None):
     return docs
 
 
-def build_chain(k=None):
-    """LCEL chain (retriever | prompt | llm | StrOutputParser) mapping question -> answer text."""
-    from langchain_core.output_parsers import StrOutputParser
-    from langchain_core.prompts import ChatPromptTemplate
-    from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", _STRICT_SYSTEM), ("human", "Context:\n{context}\n\nQuestion: {question}")]
-    )
-    retrieve_docs = RunnableLambda(lambda q: _retrieve_local(q, k))
-    return (
-        {"context": retrieve_docs | _format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | _get_llm()
-        | StrOutputParser()
-    )
-
-
 def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None) -> Answer
     from langchain_core.prompts import ChatPromptTemplate
 
@@ -236,7 +238,7 @@ def _answer_local(question, k=None, rewrite=None):  # (str, int|None, bool|None)
     )
     chain = prompt | _get_llm()
     t0 = time.perf_counter()
-    msg = chain.invoke({"context": _format_docs(docs), "question": question})
+    msg = _generate(chain, {"context": _format_docs(docs), "question": question})
     _tick(timings, "generate_s", t0)
     text = _finish(msg, docs)
 
@@ -400,8 +402,7 @@ def _make_retrieval_query(question, history, rewrite):
 
 
 def answer_grounded(question, primary_collection=None, primary_label="project",
-                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None, memory=None,
-                    reuse=None):
+                    allow_fallback=None, history=None, rewrite=None, corpus_courses=None, memory=None):
     """Grounded answer with a confidence gate, project-first fallback, and
     optional multi-turn conversation history.
 
@@ -411,9 +412,6 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     - Else refuse with config.GROUNDED_REFUSAL rather than guess.
     `history` is a list of prior {role, content} turns for conversational memory.
     `memory` is {collection: [chunk ids]} merged into the gated rerank pools.
-    `reuse` is a project's near-repeat cache of (query vector, docs, source): a
-    non-meta question within config.NEAR_REPEAT_THRESHOLD cosine of a cached one
-    reuses that entry's gated outcome (answer or refusal) and skips retrieval.
     """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -423,7 +421,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     from . import local_store
 
     start = time.perf_counter()
-    timings = {"rewrite_s": 0.0, "reuse_s": 0.0, "search_s": 0.0, "rerank_s": 0.0, "generate_s": 0.0}
+    timings = {"rewrite_s": 0.0, "search_s": 0.0, "rerank_s": 0.0, "generate_s": 0.0}
     if rewrite is None:
         rewrite = config.QUERY_REWRITE_ENABLED
     if rewrite:
@@ -436,18 +434,7 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     docs, used = [], "none"
     meta = _is_meta_question(question)
 
-    vec, hit = None, None
-    if reuse is not None and config.NEAR_REPEAT_THRESHOLD > 0 and not meta:
-        t0 = time.perf_counter()
-        vec = local_store.get_embeddings().embed_query(rq)
-        best = max(reuse, key=lambda e: _cosine(vec, e[0]), default=None)
-        if best is not None and _cosine(vec, best[0]) >= config.NEAR_REPEAT_THRESHOLD:
-            hit = best
-        _tick(timings, "reuse_s", t0)
-
-    if hit is not None:
-        docs, used = list(hit[1]), hit[2]
-    elif primary_collection:
+    if primary_collection:
         if meta and local_store.collection_count(primary_collection) > 0:
             # "Summarize / what's in this doc" — answer from the doc's top chunks
             # without the confidence gate (which would wrongly refuse these).
@@ -464,21 +451,17 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     # (corpus_courses == [] means "project docs only"). corpus_courses may also
     # restrict fallback to a subset of subjects.
     corpus_disabled = corpus_courses is not None and len(corpus_courses) == 0
-    if (hit is None and not docs and (allow_fallback or not primary_collection)
+    if (not docs and (allow_fallback or not primary_collection)
             and not (meta and primary_collection) and not corpus_disabled):
         docs = _top_docs(rq, config.CHROMA_COLLECTION, gated=True, allowed_courses=corpus_courses,
                          extra_ids=(memory or {}).get(config.CHROMA_COLLECTION), timings=timings)
         if docs:
             used = "corpus"
 
-    if vec is not None and hit is None:
-        reuse.append((vec, list(docs), used))  # refusals too (docs=[], used="none")
-    reused = hit is not None
-
     if not docs:
         _tick(timings, "total_s", start)
         return Answer(config.GROUNDED_REFUSAL, [], source="none", rewritten_query=rewritten,
-                      timings=timings, reused=reused)
+                      timings=timings)
 
     system = (
         "You are BearLM, a grounded study assistant having a conversation. Answer "
@@ -500,45 +483,17 @@ def answer_grounded(question, primary_collection=None, primary_label="project",
     msgs.append(HumanMessage(content=f"Context:\n{_format_docs(docs)}\n\nQuestion: {question}"))
 
     t0 = time.perf_counter()
-    msg = _get_llm().invoke(msgs)
+    msg = _generate(_get_llm(), msgs)
     _tick(timings, "generate_s", t0)
     text = _finish(msg, docs)
     _tick(timings, "total_s", start)
     return Answer(text, _dedupe_citations(docs), source=used, rewritten_query=rewritten, docs=docs,
-                  timings=timings, reused=reused)
-
-
-def _cosine(a, b):
-    dot = sum(x * y for x, y in zip(a, b))
-    na, nb = sum(x * x for x in a) ** 0.5, sum(y * y for y in b) ** 0.5
-    return dot / (na * nb) if na and nb else 0.0
+                  timings=timings)
 
 
 def answer(question, k=None, rewrite=None):
-    """Backend-dispatching entry point the UI/eval calls."""
-    if config.BACKEND == "local":
-        return _answer_local(question, k, rewrite)
-    return _answer_openai(question, k)
-
-
-def _answer_openai(question, k=None):
-    chunks = retrieve(question, k)
-    if not chunks:
-        return Answer("I couldn't find anything relevant.", [])
-    messages = build_prompt(question, chunks)
-    response = _client.chat.completions.create(model=CHAT_MODEL, messages=messages)
-    text = response.choices[0].message.content
-    seen, citations = set(), []
-    for chunk in chunks:
-        key = (chunk["course"], chunk["section"])
-        if key not in seen:
-            seen.add(key)
-            citations.append({
-                "course": chunk["course"],
-                "section": chunk["section"],
-                "source": chunk.get("filename"),
-            })
-    return Answer(text, citations, docs=chunks)
+    """Corpus Q&A entry point the UI/eval calls."""
+    return _answer_local(question, k, rewrite)
 
 
 if __name__ == "__main__":

@@ -59,12 +59,25 @@
 
     try {
       const rewrite = !!(rewriteToggle && rewriteToggle.checked);
-      const resp = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: question, rewrite: rewrite }),
-      });
-      if (!resp.ok) throw new Error("Request failed (" + resp.status + ")");
+      let resp;
+      try {
+        resp = await fetch("/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: question, rewrite: rewrite }),
+        });
+      } catch (err) {
+        // fetch itself rejected: a real network failure.
+        showError("Couldn't reach BearLM. Is the server running? (" + err.message + ")");
+        return;
+      }
+      if (!resp.ok) {
+        // Show the server's message (e.g. 503 "Can't reach Ollama ...") as is.
+        let detail = "Request failed (" + resp.status + ")";
+        try { const j = await resp.json(); if (j.detail) detail = j.detail; } catch (e) {}
+        showError(detail);
+        return;
+      }
       const data = await resp.json();
       const provenance = {
         original: originalMsg,
@@ -73,7 +86,7 @@
       };
       window.BearLM.renderResult(result, data, { showBadge: false, provenance: provenance });
     } catch (err) {
-      showError("Couldn't reach BearLM. Is the server running? (" + err.message + ")");
+      showError(err.message);
     } finally {
       pending = false;
       submit.disabled = false;

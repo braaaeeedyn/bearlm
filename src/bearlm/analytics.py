@@ -1,4 +1,4 @@
-"""Local usage analytics (SQLite) — no Atlas required.
+"""Local usage analytics (SQLite).
 
 Logs each corpus question, aggregates it for the Analytics page, surfaces the
 **most-asked area** (the course students query most — i.e. where they need the

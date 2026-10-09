@@ -1,4 +1,4 @@
-"""Central config: BACKEND flag, secrets, and shared constants."""
+"""Central config: paths and shared constants (all overridable via .env)."""
 
 import os
 from pathlib import Path
@@ -9,31 +9,13 @@ load_dotenv()
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-# "local" = Ollama + Chroma; "openai" = OpenAI + MongoDB Atlas.
-BACKEND = os.environ.get("BACKEND", "openai").strip().lower()
-if BACKEND not in ("openai", "local"):
-    raise ValueError(f"BACKEND must be 'openai' or 'local', got {BACKEND!r}")
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-MONGODB_URI = os.environ.get("MONGODB_URI")
-if BACKEND == "openai":
-    missing = [k for k in ("OPENAI_API_KEY", "MONGODB_URI") if not os.environ.get(k)]
-    if missing:
-        raise RuntimeError(f"BACKEND=openai requires {', '.join(missing)} in .env.")
-
-RAW_DIR = _ROOT / "data" / "raw"
-
-# --- OpenAI backend ---
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536
-DB_NAME = "bearlm"
-CHUNKS_COLL = "chunks"
-QUERY_LOGS_COLL = "query_logs"
+RAW_DIR = _ROOT / "data" / "raw"  # private course files (gitignored); only needed to re-chunk
+CHUNKS_EXPORT = _ROOT / "data" / "corpus_chunks.jsonl.gz"  # public chunk text + metadata
 
 CHUNK_SIZE_TOKENS = 500
 CHUNK_OVERLAP_TOKENS = 50
 
-# --- Local backend (Ollama + Chroma) ---
+# --- Ollama + Chroma ---
 # localhost costs ~2 s per new connection on Windows (IPv6 fallback)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "llama3.1:8b")  # qwen2.5:3b if <8GB VRAM
@@ -42,7 +24,7 @@ OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
 # Longest legit answer seen was 815 tokens; 1024 adds ~25% headroom and bounds a runaway to ~31 s.
 OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "1024"))
 OLLAMA_TIMEOUT_S = float(os.environ.get("OLLAMA_TIMEOUT_S", "120"))  # httpx stall timeout (connect / next chunk)
-LOCAL_EMBEDDING_DIM = 768
+EMBEDDING_DIM = 768
 
 CHROMA_DIR = os.environ.get("CHROMA_DIR", str(_ROOT / "db"))
 CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "bearlm_chunks")
@@ -77,11 +59,6 @@ PROJECT_FALLBACK_TO_CORPUS = os.environ.get("PROJECT_FALLBACK_TO_CORPUS", "true"
 # many of the most recent are merged into one query's rerank pool.
 PROJECT_MEMORY_SIZE = int(os.environ.get("PROJECT_MEMORY_SIZE", "40"))
 PROJECT_MEMORY_MERGE = int(os.environ.get("PROJECT_MEMORY_MERGE", "8"))
-# Near-repeat reuse: a project question within this cosine of an earlier one
-# reuses that question's retrieval (and gate outcome). <= 0 disables (the default:
-# follow-ups embed too close to the previous turn, eval/speed_experiments.json).
-NEAR_REPEAT_THRESHOLD = float(os.environ.get("NEAR_REPEAT_THRESHOLD", "0"))
-MIN_RELEVANCE = float(os.environ.get("MIN_RELEVANCE", "0.30"))
 GROUNDED_REFUSAL = "I don't know based on the provided materials."
 
 # --- Analytics (local SQLite) ---
